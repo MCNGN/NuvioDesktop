@@ -1,6 +1,8 @@
 package com.nuvio.app.features.player.desktop
 
 import androidx.compose.ui.graphics.Color
+import com.nuvio.app.core.storage.DesktopStorage
+import com.nuvio.app.core.storage.ProfileScopedKey
 import com.nuvio.app.features.player.PlayerControlAddonSubtitleItem
 import com.nuvio.app.features.player.PlayerControlEpisodeItem
 import com.nuvio.app.features.player.PlayerControlFilterItem
@@ -26,6 +28,8 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import javax.swing.SwingUtilities
 import kotlin.concurrent.Volatile
+
+private const val DesktopPlayerVolumeLevelKey = "desktop_player_volume_level"
 
 internal class NativePlayerController(
     private val host: NativePlayerHost,
@@ -103,6 +107,10 @@ internal class NativePlayerController(
                     eventSink = eventSink,
                 )
                 if (handle == 0L) error("Native player did not return a handle.")
+                DesktopPlayerVolumeStorage.load()?.let { restoredVolume ->
+                    NativePlayerBridge.setVolume(handle, restoredVolume)
+                    controlsState = controlsState.copy(volumeLevel = restoredVolume)
+                }
                 updateControls(controlsState)
             }.onFailure { error ->
                 pending.onError(error.message)
@@ -240,6 +248,7 @@ internal class NativePlayerController(
         if (current != 0L) {
             val nextLevel = level.coerceIn(0f, 1f)
             NativePlayerBridge.setVolume(current, nextLevel)
+            DesktopPlayerVolumeStorage.save(nextLevel)
             controlsState = controlsState.copy(volumeLevel = nextLevel)
             updateControls(controlsState)
         }
@@ -476,6 +485,18 @@ private data class PendingSource(
     val nvidiaRtxSuperResolutionEnabled: Boolean,
     val onError: (String?) -> Unit,
 )
+
+private object DesktopPlayerVolumeStorage {
+    private val store = DesktopStorage.store("nuvio_player_settings")
+
+    fun load(): Float? =
+        store.getFloat(ProfileScopedKey.of(DesktopPlayerVolumeLevelKey))
+            ?.coerceIn(0f, 1f)
+
+    fun save(level: Float) {
+        store.putFloat(ProfileScopedKey.of(DesktopPlayerVolumeLevelKey), level.coerceIn(0f, 1f))
+    }
+}
 
 private fun Map<String, String>.toHeaderLines(): List<String> =
     entries.mapNotNull { (key, value) ->

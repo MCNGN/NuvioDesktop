@@ -2518,6 +2518,17 @@ root.addEventListener("dblclick", event => {
   togglePlayerFullscreen();
 });
 
+root.addEventListener("wheel", event => {
+  if (playbackErrorText()) return;
+  if (activeModal || isTextEntryTarget(event.target)) return;
+  if (event.target.closest("button,input")) return;
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+  event.preventDefault();
+  focusShortcutRoot();
+  noteChromeActivity();
+  sendKeyboardVolume(event.deltaY > 0 ? -1 : 1);
+}, { passive: false });
+
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && playbackErrorText()) {
     event.preventDefault();
