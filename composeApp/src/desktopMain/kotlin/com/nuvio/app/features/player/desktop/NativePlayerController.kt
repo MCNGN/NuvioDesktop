@@ -1212,6 +1212,8 @@ private fun StringBuilder.appendSubtitleOptionItemJson(item: PlayerControlSubtit
     appendJsonField("metadata", item.metadata)
     append(',')
     appendJsonField("detail", item.detail)
+    // DEBUG subtitle-uploader: hapus setelah fitur dipastikan jalan
+    println("[SubSource-DEBUG-SERIALIZER] id=${item.id} metadata='${item.metadata}' detail='${item.detail}'")
     append(',')
     appendJsonField("isSelected", item.isSelected)
     append('}')
