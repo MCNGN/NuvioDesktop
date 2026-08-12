@@ -3,7 +3,6 @@ package com.nuvio.app.features.player
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,7 +29,6 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -371,7 +369,6 @@ private fun SubtitleLanguageRow(
 }
 
 @Composable
-@OptIn(ExperimentalFoundationApi::class)
 private fun SubtitleOptionRow(
     option: SubtitleSelectionOption,
     selected: Boolean,
@@ -442,35 +439,16 @@ private fun SubtitleOptionRow(
                 )
             }
             detail?.let { detailText ->
-                // Nama file/release: ellipsis biar gak dobel baris; tooltip saat
-                // hover buat lihat nama file LENGKAP (sering kepotong).
-                androidx.compose.foundation.TooltipArea(
-                    tooltip = {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = tokens.colors.surfaceElevated,
-                            shadowElevation = 8.dp,
-                        ) {
-                            Text(
-                                text = detailText,
-                                color = tokens.colors.textPrimary,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                maxLines = 4,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    },
-                    delayMillis = 500,
-                ) {
-                    Text(
-                        text = detailText,
-                        color = if (selected) tokens.colors.onAccent.copy(alpha = 0.6f) else tokens.colors.textMuted.copy(alpha = 0.85f),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+                // Nama file/release: baris sendiri biar gak dobel baris; ellipsis
+                // kalau kepanjangan. (TooltipArea CMP bermasalah render kontennya,
+                // jadi pakai Text biasa biar nama file pasti kelihatan.)
+                Text(
+                    text = detailText,
+                    color = if (selected) tokens.colors.onAccent.copy(alpha = 0.6f) else tokens.colors.textMuted.copy(alpha = 0.85f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
         if (selected) {
