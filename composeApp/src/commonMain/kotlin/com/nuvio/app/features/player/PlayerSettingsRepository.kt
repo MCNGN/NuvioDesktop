@@ -77,6 +77,7 @@ data class PlayerSettingsUiState(
     val nextEpisodeThresholdMinutesBeforeEnd: Float = 2f,
     val useLibass: Boolean = false,
     val libassRenderType: String = "CUES",
+    val volumeScrollStep: Int = 5,
     val iosVideoOutputPreset: IosVideoOutputPreset = IosVideoOutputPreset.NativeEdr,
     val iosToneMappingMode: IosToneMappingMode = IosToneMappingMode.Auto,
     val iosTargetPrimaries: IosTargetPrimaries = IosTargetPrimaries.Auto,
@@ -145,6 +146,7 @@ object PlayerSettingsRepository {
     private var nextEpisodeThresholdMinutesBeforeEnd = 2f
     private var useLibass = false
     private var libassRenderType = "CUES"
+    private var volumeScrollStep = 5
     private var iosVideoOutputPreset = IosVideoOutputPreset.NativeEdr
     private var iosToneMappingMode = IosToneMappingMode.Auto
     private var iosTargetPrimaries = IosTargetPrimaries.Auto
@@ -353,6 +355,7 @@ object PlayerSettingsRepository {
         nextEpisodeThresholdMinutesBeforeEnd = PlayerSettingsStorage.loadNextEpisodeThresholdMinutesBeforeEnd() ?: 2f
         useLibass = PlayerSettingsStorage.loadUseLibass() ?: false
         libassRenderType = PlayerSettingsStorage.loadLibassRenderType() ?: "CUES"
+        volumeScrollStep = (PlayerSettingsStorage.loadVolumeScrollStep() ?: 5).let { if (it == 1 || it == 5) it else 5 }
         iosVideoOutputPreset = PlayerSettingsStorage.loadIosVideoOutputPreset()
             ?.let { runCatching { IosVideoOutputPreset.valueOf(it) }.getOrNull() }
             ?: IosVideoOutputPreset.NativeEdr
@@ -766,6 +769,15 @@ object PlayerSettingsRepository {
         PlayerSettingsStorage.saveUseLibass(enabled)
     }
 
+    fun setVolumeScrollStep(step: Int) {
+        ensureLoaded()
+        val normalized = if (step == 1 || step == 5) step else 5
+        if (volumeScrollStep == normalized) return
+        volumeScrollStep = normalized
+        publish()
+        PlayerSettingsStorage.saveVolumeScrollStep(normalized)
+    }
+
     fun setNvidiaRtxSuperResolutionEnabled(enabled: Boolean) {
         ensureLoaded()
         if (nvidiaRtxSuperResolutionEnabled == enabled) return
@@ -994,6 +1006,7 @@ object PlayerSettingsRepository {
             nextEpisodeThresholdMinutesBeforeEnd = nextEpisodeThresholdMinutesBeforeEnd,
             useLibass = useLibass,
             libassRenderType = libassRenderType,
+            volumeScrollStep = volumeScrollStep,
             iosVideoOutputPreset = iosVideoOutputPreset,
             iosToneMappingMode = iosToneMappingMode,
             iosTargetPrimaries = iosTargetPrimaries,

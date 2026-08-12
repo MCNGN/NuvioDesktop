@@ -117,6 +117,7 @@ internal fun LazyListScope.playbackSettingsContent(
     tunnelingEnabled: Boolean,
     useLibass: Boolean,
     libassRenderType: String,
+    volumeScrollStep: Int,
 ) {
     item {
         PlaybackSettingsSection(
@@ -140,6 +141,7 @@ internal fun LazyListScope.playbackSettingsContent(
             tunnelingEnabled = tunnelingEnabled,
             useLibass = useLibass,
             libassRenderType = libassRenderType,
+            volumeScrollStep = volumeScrollStep,
         )
     }
 }
@@ -304,6 +306,7 @@ private fun PlaybackSettingsSection(
     tunnelingEnabled: Boolean,
     useLibass: Boolean,
     libassRenderType: String,
+    volumeScrollStep: Int,
 ) {
     var showPreferredAudioDialog by remember { mutableStateOf(false) }
     var showSecondaryAudioDialog by remember { mutableStateOf(false) }
@@ -325,6 +328,7 @@ private fun PlaybackSettingsSection(
     var showIosTargetPrimariesDialog by remember { mutableStateOf(false) }
     var showIosTargetTransferDialog by remember { mutableStateOf(false) }
     var showLibassRenderTypeDialog by remember { mutableStateOf(false) }
+    var showVolumeScrollStepDialog by remember { mutableStateOf(false) }
     var showAutoPlayModeDialog by remember { mutableStateOf(false) }
     var showAutoPlaySourceDialog by remember { mutableStateOf(false) }
     var showAutoPlayAddonSelectionDialog by remember { mutableStateOf(false) }
@@ -661,6 +665,14 @@ private fun PlaybackSettingsSection(
                         )
                     }
                 }
+                SettingsGroupDivider(isTablet = isTablet)
+                SettingsNavigationRow(
+                    // string literal: string resource baru CMP bermasalah di setup Windows
+                    title = "Scroll Volume Step",
+                    description = "$volumeScrollStep% per notch",
+                    isTablet = isTablet,
+                    onClick = { showVolumeScrollStepDialog = true },
+                )
             }
         }
 
@@ -1623,6 +1635,17 @@ private fun PlaybackSettingsSection(
         )
     }
 
+    if (showVolumeScrollStepDialog) {
+        VolumeScrollStepDialog(
+            selectedStep = volumeScrollStep,
+            onStepSelected = { step ->
+                PlayerSettingsRepository.setVolumeScrollStep(step)
+                showVolumeScrollStepDialog = false
+            },
+            onDismiss = { showVolumeScrollStepDialog = false },
+        )
+    }
+
     if (showAutoPlayModeDialog) {
         StreamAutoPlayModeDialog(
             selectedMode = autoPlayPlayerSettings.streamAutoPlayMode,
@@ -2544,6 +2567,96 @@ private fun LibassRenderTypeDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onRenderTypeSelected(value) },
+                            shape = RoundedCornerShape(12.dp),
+                            color = containerColor,
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = stringResource(labelRes),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Box(
+                                    modifier = Modifier.size(24.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = stringResource(Res.string.settings_playback_dialog_close),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VolumeScrollStepDialog(
+    selectedStep: Int,
+    onStepSelected: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val options = listOf(
+        5 to "5% per notch",
+        1 to "1% per notch",
+    )
+
+    BasicAlertDialog(
+        onDismissRequest = onDismiss,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    // string literal: string resource baru CMP bermasalah di setup Windows
+                    text = "Scroll Volume Step",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                )
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    options.forEach { (step, labelRes) ->
+                        val isSelected = step == selectedStep
+                        val containerColor = if (isSelected) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onStepSelected(step) },
                             shape = RoundedCornerShape(12.dp),
                             color = containerColor,
                         ) {

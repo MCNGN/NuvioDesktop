@@ -178,6 +178,7 @@ data class PlayerControlsState(
     val nextEpisodePlayable: Boolean = false,
     val showSubmitIntro: Boolean = false,
     val showVideoSettings: Boolean = false,
+    val volumeScrollStep: Int = 5,
     val showSources: Boolean = false,
     val showEpisodes: Boolean = false,
     val showExternalPlayer: Boolean = false,

@@ -962,6 +962,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         append(',')
         appendJsonField("showVideoSettings", showVideoSettings)
         append(',')
+        appendJsonField("volumeScrollStep", volumeScrollStep)
+        append(',')
         appendJsonField("showSources", showSources)
         append(',')
         appendJsonField("showEpisodes", showEpisodes)

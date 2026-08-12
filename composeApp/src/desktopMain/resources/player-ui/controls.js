@@ -69,8 +69,6 @@ const sourcesButton = document.getElementById("sourcesButton");
 const episodesButton = document.getElementById("episodesButton");
 const audioModal = document.getElementById("audioModal");
 const subtitleModal = document.getElementById("subtitleModal");
-const settingsModal = document.getElementById("settingsModal");
-const settingsList = document.getElementById("settingsList");
 const audioPanelTitle = document.getElementById("audioPanelTitle");
 const audioTrackList = document.getElementById("audioTrackList");
 const subtitleTrackList = document.getElementById("subtitleTrackList");
@@ -833,7 +831,6 @@ const rangePositionMs = () => {
 const modalByName = {
   audio: audioModal,
   subtitles: subtitleModal,
-  settings: settingsModal,
   sources: sourceModal,
   episodes: episodesModal,
   submitIntro: submitIntroModal,
@@ -973,36 +970,6 @@ const renderAudioTrackList = () => {
     row.appendChild(copy);
     row.appendChild(buildCheckIcon());
     audioTrackList.appendChild(row);
-  });
-};
-
-const renderSettingsModal = () => {
-  if (!settingsList) return;
-  settingsList.textContent = "";
-  const options = [
-    { value: 5, label: "Scroll volume step: 5%" },
-    { value: 1, label: "Scroll volume step: 1%" },
-  ];
-  options.forEach(option => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = `track-row audio-track-row${volumeScrollStepPercent === option.value ? " selected" : ""}`;
-    row.addEventListener("click", event => {
-      event.stopPropagation();
-      volumeScrollStepPercent = option.value;
-      localStorage.setItem("nuvio.volumeScrollStep", String(volumeScrollStepPercent));
-      showPlayerToast(`Scroll ${volumeScrollStepPercent}%`);
-      renderSettingsModal();
-    });
-    const copy = document.createElement("span");
-    copy.className = "audio-track-copy";
-    const name = document.createElement("span");
-    name.className = "audio-track-name";
-    name.textContent = option.label;
-    copy.appendChild(name);
-    row.appendChild(copy);
-    row.appendChild(buildCheckIcon());
-    settingsList.appendChild(row);
   });
 };
 
@@ -1722,7 +1689,6 @@ const renderP2pConsentModal = () => {
 const renderActiveModal = () => {
   if (activeModal === "audio") renderAudioTrackList();
   if (activeModal === "subtitles") renderSubtitleModal();
-  if (activeModal === "settings") renderSettingsModal();
   if (activeModal === "sources") renderSourceModal();
   if (activeModal === "episodes") renderEpisodesModal();
   if (activeModal === "submitIntro") renderSubmitIntroModal();
@@ -2367,11 +2333,6 @@ document.querySelectorAll("[data-command]").forEach(button => {
       togglePlayerFullscreen();
       return;
     }
-    if (command === "videoSettings") {
-      renderSettingsModal();
-      openPlayerModal("settings");
-      return;
-    }
     showCommandToast(command);
     send(command, 0);
   });
@@ -2687,6 +2648,12 @@ window.playerControls = nextState => {
   const previousSelectedSubtitleLanguageKey = state.selectedSubtitleLanguageKey || "__off__";
   const previousSelectedSubtitleOptionId = state.selectedSubtitleOptionId || "";
   state = { ...state, ...nextState };
+  // Scroll step dari Settings -> Playback (repository native). Kalau dikirim,
+  // menang atas localStorage; kalau tidak ada, fallback ke nilai lokal.
+  const nativeStep = Number(nextState.volumeScrollStep);
+  if (nativeStep === 1 || nativeStep === 5) {
+    volumeScrollStepPercent = nativeStep;
+  }
   hasReceivedPlayerControls = true;
   const closeToken = Number(state.closeModalsToken) || 0;
   if (closeToken !== previousCloseToken) {

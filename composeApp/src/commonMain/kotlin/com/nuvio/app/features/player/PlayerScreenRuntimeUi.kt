@@ -302,7 +302,8 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
             playerSettingsUiState.introSubmitEnabled &&
             playerSettingsUiState.introDbApiKey.isNotBlank() &&
             !activeSubmitIntroImdbId().isNullOrBlank(),
-        showVideoSettings = true, // desktop: tombol gear buka panel settings web (scroll step dll)
+        showVideoSettings = isIos,
+        volumeScrollStep = playerSettingsUiState.volumeScrollStep,
         showSources = activeVideoId != null,
         showEpisodes = isSeries,
         showExternalPlayer = args.onOpenInExternalPlayer != null,
