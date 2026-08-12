@@ -1061,12 +1061,6 @@ const appendSubtitleOptionRow = option => {
   title.className = "subtitle-option-title";
   title.textContent = option.title;
   copy.appendChild(title);
-  if (option.metadata) {
-    const metadata = document.createElement("span");
-    metadata.className = "subtitle-option-metadata";
-    metadata.textContent = option.metadata;
-    copy.appendChild(metadata);
-  }
   if (option.detail) {
     // Nama file/release: satu baris ellipsis; title = tooltip browser buat
     // lihat nama file LENGKAP pas hover.
@@ -1075,6 +1069,12 @@ const appendSubtitleOptionRow = option => {
     detail.textContent = option.detail;
     detail.title = option.detail;
     copy.appendChild(detail);
+  }
+  if (option.metadata) {
+    const metadata = document.createElement("span");
+    metadata.className = "subtitle-option-metadata";
+    metadata.textContent = option.metadata;
+    copy.appendChild(metadata);
   }
   row.appendChild(copy);
   row.appendChild(buildCheckIcon());

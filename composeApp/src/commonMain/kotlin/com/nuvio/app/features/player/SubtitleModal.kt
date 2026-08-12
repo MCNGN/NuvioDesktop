@@ -429,15 +429,6 @@ private fun SubtitleOptionRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            metadata?.let {
-                Text(
-                    text = it,
-                    color = if (selected) tokens.colors.onAccent.copy(alpha = 0.72f) else tokens.colors.textMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
             detail?.let { detailText ->
                 // Nama file/release: baris sendiri biar gak dobel baris; ellipsis
                 // kalau kepanjangan. (TooltipArea CMP bermasalah render kontennya,
@@ -447,6 +438,15 @@ private fun SubtitleOptionRow(
                     color = if (selected) tokens.colors.onAccent.copy(alpha = 0.6f) else tokens.colors.textMuted.copy(alpha = 0.85f),
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            metadata?.let {
+                Text(
+                    text = it,
+                    color = if (selected) tokens.colors.onAccent.copy(alpha = 0.72f) else tokens.colors.textMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
