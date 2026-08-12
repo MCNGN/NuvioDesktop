@@ -31,7 +31,6 @@ const streamTitle = document.getElementById("streamTitle");
 const providerName = document.getElementById("providerName");
 const resizeLabel = document.getElementById("resizeLabel");
 const speedLabel = document.getElementById("speedLabel");
-const scrollStepLabel = document.getElementById("scrollStepLabel");
 const subtitlesLabel = document.getElementById("subtitlesLabel");
 const audioLabel = document.getElementById("audioLabel");
 const sourcesLabel = document.getElementById("sourcesLabel");
@@ -70,6 +69,8 @@ const sourcesButton = document.getElementById("sourcesButton");
 const episodesButton = document.getElementById("episodesButton");
 const audioModal = document.getElementById("audioModal");
 const subtitleModal = document.getElementById("subtitleModal");
+const settingsModal = document.getElementById("settingsModal");
+const settingsList = document.getElementById("settingsList");
 const audioPanelTitle = document.getElementById("audioPanelTitle");
 const audioTrackList = document.getElementById("audioTrackList");
 const subtitleTrackList = document.getElementById("subtitleTrackList");
@@ -832,6 +833,7 @@ const rangePositionMs = () => {
 const modalByName = {
   audio: audioModal,
   subtitles: subtitleModal,
+  settings: settingsModal,
   sources: sourceModal,
   episodes: episodesModal,
   submitIntro: submitIntroModal,
@@ -971,6 +973,36 @@ const renderAudioTrackList = () => {
     row.appendChild(copy);
     row.appendChild(buildCheckIcon());
     audioTrackList.appendChild(row);
+  });
+};
+
+const renderSettingsModal = () => {
+  if (!settingsList) return;
+  settingsList.textContent = "";
+  const options = [
+    { value: 5, label: "Scroll volume step: 5%" },
+    { value: 1, label: "Scroll volume step: 1%" },
+  ];
+  options.forEach(option => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `track-row audio-track-row${volumeScrollStepPercent === option.value ? " selected" : ""}`;
+    row.addEventListener("click", event => {
+      event.stopPropagation();
+      volumeScrollStepPercent = option.value;
+      localStorage.setItem("nuvio.volumeScrollStep", String(volumeScrollStepPercent));
+      showPlayerToast(`Scroll ${volumeScrollStepPercent}%`);
+      renderSettingsModal();
+    });
+    const copy = document.createElement("span");
+    copy.className = "audio-track-copy";
+    const name = document.createElement("span");
+    name.className = "audio-track-name";
+    name.textContent = option.label;
+    copy.appendChild(name);
+    row.appendChild(copy);
+    row.appendChild(buildCheckIcon());
+    settingsList.appendChild(row);
   });
 };
 
@@ -1690,6 +1722,7 @@ const renderP2pConsentModal = () => {
 const renderActiveModal = () => {
   if (activeModal === "audio") renderAudioTrackList();
   if (activeModal === "subtitles") renderSubtitleModal();
+  if (activeModal === "settings") renderSettingsModal();
   if (activeModal === "sources") renderSourceModal();
   if (activeModal === "episodes") renderEpisodesModal();
   if (activeModal === "submitIntro") renderSubmitIntroModal();
@@ -2026,7 +2059,6 @@ const renderChrome = () => {
   setText(providerName, state.providerName);
   resizeLabel.textContent = state.resizeModeLabel || "Fit";
   speedLabel.textContent = state.playbackSpeedLabel || "1x";
-  scrollStepLabel.textContent = `${volumeScrollStepPercent}%`;
   subtitlesLabel.textContent = state.subtitlesLabel || "Subs";
   audioLabel.textContent = state.audioLabel || "Audio";
   sourcesLabel.textContent = state.sourcesLabel || "Sources";
@@ -2335,12 +2367,9 @@ document.querySelectorAll("[data-command]").forEach(button => {
       togglePlayerFullscreen();
       return;
     }
-    if (command === "scrollStep") {
-      // Cycle sensitivitas scroll volume: 5% <-> 1% per notch.
-      volumeScrollStepPercent = volumeScrollStepPercent === 5 ? 1 : 5;
-      localStorage.setItem("nuvio.volumeScrollStep", String(volumeScrollStepPercent));
-      scrollStepLabel.textContent = `${volumeScrollStepPercent}%`;
-      showPlayerToast(`Scroll ${volumeScrollStepPercent}%`);
+    if (command === "videoSettings") {
+      renderSettingsModal();
+      openPlayerModal("settings");
       return;
     }
     showCommandToast(command);

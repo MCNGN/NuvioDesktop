@@ -1703,6 +1703,10 @@ button:disabled {
   width: min(444px, calc(100vw - clamp(56px, 8vw, 104px))) !important;
 }
 
+.settings-rail-panel {
+  width: min(444px, calc(100vw - clamp(56px, 8vw, 104px))) !important;
+}
+
 .subtitle-rail-panel {
   max-width: calc(100vw - clamp(56px, 8vw, 104px));
 }
