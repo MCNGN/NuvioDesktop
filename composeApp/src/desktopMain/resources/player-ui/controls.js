@@ -383,6 +383,7 @@ let playerToastToken = 0;
 let pendingSettingToastCommand = "";
 let pendingSettingToastToken = 0;
 let pendingVolumeToast = false;
+let showRemainingTime = false;  // klik label waktu: elapsed -> sisa waktu
 const prefersReducedMotion = window.matchMedia &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const modalTransitionMs = prefersReducedMotion ? 1 : 240;
@@ -688,7 +689,10 @@ const setProgress = (positionMs, durationMs) => {
   positionLabel.textContent = formatTime(positionMs);
   durationLabel.textContent = formatTime(durationMs);
   if (timeLabel) {
-    timeLabel.textContent = `${formatTime(positionMs)} / ${formatTime(durationMs)}`;
+    // Klik label waktu = toggle elapsed -> sisa waktu (remaining).
+    timeLabel.textContent = showRemainingTime
+      ? `-${formatTime(Math.max(0, durationMs - positionMs))} / ${formatTime(durationMs)}`
+      : `${formatTime(positionMs)} / ${formatTime(durationMs)}`;
   }
   syncVolumeControl();
 };
@@ -2567,6 +2571,38 @@ volumeSlider.addEventListener("input", () => {
   send("volumeChange", nextLevel);
 });
 
+// Scroll wheel di area video = atur volume (delta dalam persen).
+// Scroll di dalam panel/modal tetap dipakai buat scroll konten.
+document.addEventListener("wheel", event => {
+  if (isChromeInteractionTarget(event.target)) return;
+  event.preventDefault();
+  const delta = event.deltaY < 0 ? 5 : -5;
+  pendingVolumeToast = true;
+  showPlayerToast(nextVolumeToastLabel(delta > 0 ? 1 : -1));
+  send("volumeScroll", delta);
+}, { passive: false });
+
+// Klik kiri di area video (di luar kontrol) = toggle pause/play.
+// Flag ini mencegah root-click handler ikut toggle chrome (dobel aksi).
+let suppressChromeToggleClick = false;
+document.addEventListener("pointerdown", event => {
+  if (event.button !== 0) return;
+  if (isChromeInteractionTarget(event.target)) return;
+  event.preventDefault();
+  suppressChromeToggleClick = true;
+  send("toggle", 0);
+}, true);
+
+// Klik label waktu = toggle elapsed <-> sisa waktu (remaining).
+if (timeLabel) {
+  timeLabel.style.cursor = "pointer";
+  timeLabel.addEventListener("click", () => {
+    noteChromeActivity();
+    showRemainingTime = !showRemainingTime;
+    setProgress(state.positionMs || 0, state.durationMs || 0);
+  });
+}
+
 window.playerUpdate = update => {
   const durationMs = Math.round((Number(update.duration) || 0) * 1000);
   const positionMs = Math.round((Number(update.position) || 0) * 1000);
@@ -2647,6 +2683,10 @@ window.playerControls = nextState => {
 root.addEventListener("click", event => {
   if (playbackErrorText()) return;
   if (event.target.closest("button,input")) return;
+  if (suppressChromeToggleClick) {
+    suppressChromeToggleClick = false;
+    return;
+  }
   window.clearTimeout(tapTimer);
   tapTimer = window.setTimeout(() => {
     toggleChrome();
