@@ -2567,14 +2567,19 @@ document.addEventListener("wheel", event => {
   if (isChromeInteractionTarget(event.target)) return;
   event.preventDefault();
   const delta = event.deltaY < 0 ? 5 : -5;
+  pendingVolumeToast = true;
+  showPlayerToast(nextVolumeToastLabel(delta > 0 ? 1 : -1));
   send("volumeScroll", delta);
 }, { passive: false });
 
-// Klik tengah (tombol scroll) di layar = toggle pause/play.
+// Klik kiri di area video (di luar kontrol) = toggle pause/play.
+// Flag ini mencegah root-click handler ikut toggle chrome (dobel aksi).
+let suppressChromeToggleClick = false;
 document.addEventListener("pointerdown", event => {
-  if (event.button !== 1) return;
+  if (event.button !== 0) return;
   if (isChromeInteractionTarget(event.target)) return;
   event.preventDefault();
+  suppressChromeToggleClick = true;
   send("toggle", 0);
 }, true);
 
@@ -2668,6 +2673,10 @@ window.playerControls = nextState => {
 root.addEventListener("click", event => {
   if (playbackErrorText()) return;
   if (event.target.closest("button,input")) return;
+  if (suppressChromeToggleClick) {
+    suppressChromeToggleClick = false;
+    return;
+  }
   window.clearTimeout(tapTimer);
   tapTimer = window.setTimeout(() => {
     toggleChrome();
