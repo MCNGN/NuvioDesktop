@@ -287,6 +287,7 @@ internal class NativePlayerController(
                 onDesktopFullscreenChanged()
             }
             "volumeChange" -> setFallbackVolume(value.toFloat())
+            "volumeScroll" -> adjustFallbackVolume(value.toFloat())
             else -> {
                 val eventHandled = onEvent(type, value)
                 if (type.shouldLogNativeControlEvent()) {

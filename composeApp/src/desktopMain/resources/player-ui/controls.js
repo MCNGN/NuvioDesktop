@@ -383,6 +383,7 @@ let playerToastToken = 0;
 let pendingSettingToastCommand = "";
 let pendingSettingToastToken = 0;
 let pendingVolumeToast = false;
+let showRemainingTime = false;  // klik label waktu: elapsed -> sisa waktu
 const prefersReducedMotion = window.matchMedia &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const modalTransitionMs = prefersReducedMotion ? 1 : 240;
@@ -688,7 +689,10 @@ const setProgress = (positionMs, durationMs) => {
   positionLabel.textContent = formatTime(positionMs);
   durationLabel.textContent = formatTime(durationMs);
   if (timeLabel) {
-    timeLabel.textContent = `${formatTime(positionMs)} / ${formatTime(durationMs)}`;
+    // Klik label waktu = toggle elapsed -> sisa waktu (remaining).
+    timeLabel.textContent = showRemainingTime
+      ? `-${formatTime(Math.max(0, durationMs - positionMs))} / ${formatTime(durationMs)}`
+      : `${formatTime(positionMs)} / ${formatTime(durationMs)}`;
   }
   syncVolumeControl();
 };
@@ -2556,6 +2560,33 @@ volumeSlider.addEventListener("input", () => {
   syncVolumeControl();
   send("volumeChange", nextLevel);
 });
+
+// Scroll wheel di area video = atur volume (delta dalam persen).
+// Scroll di dalam panel/modal tetap dipakai buat scroll konten.
+document.addEventListener("wheel", event => {
+  if (isChromeInteractionTarget(event.target)) return;
+  event.preventDefault();
+  const delta = event.deltaY < 0 ? 5 : -5;
+  send("volumeScroll", delta);
+}, { passive: false });
+
+// Klik tengah (tombol scroll) di layar = toggle pause/play.
+document.addEventListener("pointerdown", event => {
+  if (event.button !== 1) return;
+  if (isChromeInteractionTarget(event.target)) return;
+  event.preventDefault();
+  send("toggle", 0);
+}, true);
+
+// Klik label waktu = toggle elapsed <-> sisa waktu (remaining).
+if (timeLabel) {
+  timeLabel.style.cursor = "pointer";
+  timeLabel.addEventListener("click", () => {
+    noteChromeActivity();
+    showRemainingTime = !showRemainingTime;
+    setProgress(state.positionMs || 0, state.durationMs || 0);
+  });
+}
 
 window.playerUpdate = update => {
   const durationMs = Math.round((Number(update.duration) || 0) * 1000);
