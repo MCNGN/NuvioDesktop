@@ -124,6 +124,7 @@
                                 fontSize:(double)fontSize
                                   subPos:(int)subPos
                                useLibass:(BOOL)useLibass;
+- (BOOL)activeSubtitleIsAss;
 - (void)handleScriptMessage:(NSDictionary *)message;
 - (void)focusControlsWebViewIfNeeded;
 - (void)layoutNativeSubviews;
@@ -2021,6 +2022,21 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     mpv_set_property(_mpv, "sub-delay", MPV_FORMAT_DOUBLE, &delaySeconds);
 }
 
+- (BOOL)activeSubtitleIsAss {
+    long long count = [self int64Property:"track-list/count" fallback:0];
+    for (long long index = 0; index < count; index++) {
+        NSString *typeKey = [NSString stringWithFormat:@"track-list/%lld/type", index];
+        NSString *type = [self stringProperty:typeKey.UTF8String fallback:@""];
+        if (![type isEqualToString:@"sub"]) continue;
+        NSString *selectedKey = [NSString stringWithFormat:@"track-list/%lld/selected", index];
+        if (![self flagProperty:selectedKey.UTF8String fallback:NO]) continue;
+        NSString *codecKey = [NSString stringWithFormat:@"track-list/%lld/codec", index];
+        NSString *codec = [[self stringProperty:codecKey.UTF8String fallback:@""] lowercaseString];
+        return [codec containsString:@"ass"] || [codec containsString:@"ssa"];
+    }
+    return NO;
+}
+
 - (void)applySubtitleStyleWithTextColor:(NSString *)textColor
                         backgroundColor:(NSString *)backgroundColor
                             outlineColor:(NSString *)outlineColor
@@ -2030,7 +2046,12 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                                   subPos:(int)subPos
                                useLibass:(BOOL)useLibass {
     if (!_mpv) return;
-    if (useLibass) {
+    // "Use libass" only applies to ASS/SSA tracks: those render with their own file
+    // styles/positioning. For every other subtitle format (SRT, VTT, PGS, ...) mpv
+    // converts to ASS internally, so a global sub-ass-override=no would also strip the
+    // user's custom style (color, size, position) from e.g. SRT subtitles. Detect the
+    // active subtitle track and only enable libass mode when it is really ASS/SSA.
+    if (useLibass && [self activeSubtitleIsAss]) {
         [self setStringProperty:"sub-ass-override" value:@"no"];
     } else {
         [self setStringProperty:"sub-ass-override" value:@"force"];

@@ -169,7 +169,10 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         subtitleAutoSyncState = SubtitleAutoSyncUiState()
     }
 
-    LaunchedEffect(playerController, subtitleStyle, playerSettingsUiState.useLibass) {
+    LaunchedEffect(playerController, subtitleStyle, playerSettingsUiState.useLibass, subtitleTracks) {
+        // subtitleTracks included so the style is re-applied once the file finishes loading
+        // and the real track list (incl. the active subtitle's format) becomes available —
+        // otherwise "use libass" would incorrectly apply to non-ASS tracks selected late.
         playerController?.applySubtitleStyle(subtitleStyle, playerSettingsUiState.useLibass)
     }
 

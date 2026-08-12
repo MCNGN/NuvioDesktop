@@ -1149,6 +1149,19 @@ public:
         mpvApi().setProperty(mpv, "sub-delay", MPV_FORMAT_DOUBLE, &delaySeconds);
     }
 
+    bool activeSubtitleIsAss() {
+        long long count = int64Property("track-list/count", 0);
+        for (long long index = 0; index < count; index++) {
+            std::string prefix = "track-list/" + std::to_string(index);
+            if (stringProperty((prefix + "/type").c_str(), "") != "sub") continue;
+            bool selected = flagProperty((prefix + "/selected").c_str(), false);
+            if (!selected) continue;
+            std::string codec = lowerCopy(trackStringAtIndex(index, "codec"));
+            return codec.find("ass") != std::string::npos || codec.find("ssa") != std::string::npos;
+        }
+        return false;
+    }
+
     void applySubtitleStyle(
         const std::string &textColor,
         const std::string &backgroundColor,
@@ -1159,7 +1172,12 @@ public:
         int subPos,
         bool useLibass
     ) {
-        if (useLibass) {
+        // "Use libass" only applies to ASS/SSA tracks: those render with their own file
+        // styles/positioning. For every other subtitle format (SRT, VTT, PGS, ...) mpv
+        // converts to ASS internally, so a global sub-ass-override=no would also strip the
+        // user's custom style (color, size, position) from e.g. SRT subtitles. Detect the
+        // active subtitle track and only enable libass mode when it is really ASS/SSA.
+        if (useLibass && activeSubtitleIsAss()) {
             setStringProperty("sub-ass-override", "no");
         } else {
             setStringProperty("sub-ass-override", "force");
