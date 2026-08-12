@@ -1936,12 +1936,18 @@ button:disabled {
 .subtitle-rails {
   display: grid;
   grid-template-columns: 200px 300px;
-  align-items: start;
+  align-items: stretch;
   gap: 14px;
   max-width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+}
+
+.subtitle-rail-panel .track-list {
+  max-height: none;
 }
 
 .subtitle-rails.style-visible {
@@ -1954,6 +1960,7 @@ button:disabled {
 
 .subtitle-rail {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
