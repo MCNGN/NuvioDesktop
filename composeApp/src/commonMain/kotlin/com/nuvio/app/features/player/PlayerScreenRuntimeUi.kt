@@ -1262,9 +1262,10 @@ private fun PlayerScreenRuntime.buildPlayerControlSubtitleSelection(): PlayerCon
                         index = visibleAddonSubtitles.indexOf(option.subtitle).coerceAtLeast(0),
                         sourceLabel = option.subtitle.addonName ?: addonLabel,
                         title = title,
-                        metadata = option.subtitle.display.takeIf {
-                            it.isNotBlank() && it != title
-                        }.orEmpty(),
+                        metadata = option.subtitle.detail.takeIf { it.isNotBlank() }
+                            ?: option.subtitle.display.takeIf {
+                                it.isNotBlank() && it != title
+                            }.orEmpty(),
                         isSelected = option.id == selectedOptionId,
                     )
                 }

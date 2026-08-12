@@ -80,6 +80,9 @@ object SubtitleRepository {
                         val url = obj.stringValue("url") ?: continue
                         val rawLang = obj.subtitleLanguage() ?: "unknown"
                         val normalizedLang = normalizeLanguageCode(rawLang) ?: rawLang
+                        // Addon boleh kirim metadata tambahan (misal "release — by uploader")
+                        // via field `name` (protokol Stremio); ditampilkan sebagai detail baris.
+                        val detail = obj.stringValue("name").orEmpty()
 
                         allSubs.add(
                             AddonSubtitle(
@@ -92,6 +95,7 @@ object SubtitleRepository {
                                     addon.displayTitle,
                                 ),
                                 addonName = addon.displayTitle,
+                                detail = detail,
                             )
                         )
                     }

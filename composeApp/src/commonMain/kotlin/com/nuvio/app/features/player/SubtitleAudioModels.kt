@@ -32,6 +32,7 @@ data class AddonSubtitle(
     val display: String,
     val addonName: String? = null,
     val isSelected: Boolean = false,
+    val detail: String = "",
 )
 
 internal enum class SubtitleTab {
