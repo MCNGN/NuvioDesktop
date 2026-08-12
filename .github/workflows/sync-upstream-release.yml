@@ -1,0 +1,68 @@
+name: Sync upstream release
+
+# Level 2 sync: hanya merge ketika upstream punya RELEASE/TAG baru,
+# bukan setiap commit kecil. Cek tiap 6 jam + bisa trigger manual.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Merge upstream release into feat/player-complete
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feat/player-complete
+        uses: actions/checkout@v4
+        with:
+          ref: feat/player-complete
+          fetch-depth: 0
+
+      - name: Fetch upstream tags
+        run: |
+          git remote add upstream https://github.com/NuvioMedia/NuvioDesktop.git
+          git fetch upstream --tags --prune --quiet
+
+      - name: Find latest release tag not yet merged
+        id: release
+        run: |
+          # Tag rilis upstream (0.1.x-alpha dst), diurutkan semantik, ambil tertinggi
+          LATEST_TAG="$(git tag --list '0.*' | sort -V | tail -n 1)"
+          echo "Latest upstream tag: ${LATEST_TAG}"
+          echo "tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "${LATEST_TAG}" HEAD; then
+            echo "Tag sudah ada di branch kita - tidak ada rilis baru, selesai."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Rilis baru ditemukan - lanjut merge."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream release
+        if: steps.release.outputs.skip == 'false'
+        run: |
+          git config user.name "MCNGN"
+          git config user.email "rifqi.adibahagia@binus.ac.id"
+          TAG="${{ steps.release.outputs.tag }}"
+          echo "Merging ${TAG}..."
+          if ! git merge "${TAG}" --no-edit; then
+            echo "Ada konflik. Menyelesaikan: versi tetap milik kita (1.20)."
+            if git ls-files -u | grep -q "composeApp/Configuration/DesktopVersion.properties"; then
+              git checkout --ours composeApp/Configuration/DesktopVersion.properties
+              git add composeApp/Configuration/DesktopVersion.properties
+            fi
+            # Kalau masih ada konflik lain (file fitur kita), batalkan & tandai gagal
+            if git ls-files -u | grep -v "composeApp/Configuration/DesktopVersion.properties" | grep -q .; then
+              echo "::error::Konflik di file selain versi - perlu resolve manual. Merge dibatalkan."
+              git merge --abort
+              exit 1
+            fi
+            git commit --no-edit
+          fi
+
+      - name: Push
+        if: steps.release.outputs.skip == 'false'
+        run: git push origin feat/player-complete
