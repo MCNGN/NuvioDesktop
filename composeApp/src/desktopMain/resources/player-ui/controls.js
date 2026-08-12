@@ -31,6 +31,7 @@ const streamTitle = document.getElementById("streamTitle");
 const providerName = document.getElementById("providerName");
 const resizeLabel = document.getElementById("resizeLabel");
 const speedLabel = document.getElementById("speedLabel");
+const scrollStepLabel = document.getElementById("scrollStepLabel");
 const subtitlesLabel = document.getElementById("subtitlesLabel");
 const audioLabel = document.getElementById("audioLabel");
 const sourcesLabel = document.getElementById("sourcesLabel");
@@ -384,6 +385,11 @@ let pendingSettingToastCommand = "";
 let pendingSettingToastToken = 0;
 let pendingVolumeToast = false;
 let showRemainingTime = false;  // klik label waktu: elapsed -> sisa waktu
+// Step scroll volume (persen per notch wheel). Persist biar gak reset tiap buka.
+let volumeScrollStepPercent = (() => {
+  const saved = Number(localStorage.getItem("nuvio.volumeScrollStep"));
+  return saved === 1 || saved === 5 ? saved : 5;
+})();
 const prefersReducedMotion = window.matchMedia &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const modalTransitionMs = prefersReducedMotion ? 1 : 240;
@@ -2020,6 +2026,7 @@ const renderChrome = () => {
   setText(providerName, state.providerName);
   resizeLabel.textContent = state.resizeModeLabel || "Fit";
   speedLabel.textContent = state.playbackSpeedLabel || "1x";
+  scrollStepLabel.textContent = `${volumeScrollStepPercent}%`;
   subtitlesLabel.textContent = state.subtitlesLabel || "Subs";
   audioLabel.textContent = state.audioLabel || "Audio";
   sourcesLabel.textContent = state.sourcesLabel || "Sources";
@@ -2328,6 +2335,14 @@ document.querySelectorAll("[data-command]").forEach(button => {
       togglePlayerFullscreen();
       return;
     }
+    if (command === "scrollStep") {
+      // Cycle sensitivitas scroll volume: 5% <-> 1% per notch.
+      volumeScrollStepPercent = volumeScrollStepPercent === 5 ? 1 : 5;
+      localStorage.setItem("nuvio.volumeScrollStep", String(volumeScrollStepPercent));
+      scrollStepLabel.textContent = `${volumeScrollStepPercent}%`;
+      showPlayerToast(`Scroll ${volumeScrollStepPercent}%`);
+      return;
+    }
     showCommandToast(command);
     send(command, 0);
   });
@@ -2576,9 +2591,10 @@ volumeSlider.addEventListener("input", () => {
 document.addEventListener("wheel", event => {
   if (isChromeInteractionTarget(event.target)) return;
   event.preventDefault();
-  const delta = event.deltaY < 0 ? 5 : -5;
+  const step = volumeScrollStepPercent;
+  const delta = event.deltaY < 0 ? step : -step;
   pendingVolumeToast = true;
-  showPlayerToast(nextVolumeToastLabel(delta > 0 ? 1 : -1));
+  showPlayerToast(nextVolumeToastLabel(delta > 0 ? step / 5 : -step / 5));
   send("volumeScroll", delta);
 }, { passive: false });
 
