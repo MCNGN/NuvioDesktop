@@ -2017,7 +2017,10 @@ const computeSubtitleLiftPercent = () => {
   const barHeight = progressBar.offsetHeight || 0;
   const viewportHeight = window.innerHeight || 1;
   if (barHeight <= 0 || viewportHeight <= 0) return 0;
-  return Math.min(60, Math.ceil((barHeight / viewportHeight) * 100));
+  // Faktor 0.8: .progress terukur lebih tinggi dari area bar yang benar-benar
+  // nutupin subtitle (padding/margin HTML). Dikali 0.8 biar lift-nya pas,
+  // subtitle mendarat deket di atas bar, bukan melompat tinggi.
+  return Math.min(60, Math.ceil(((barHeight / viewportHeight) * 100) * 0.8));
 };
 const syncSubtitleLift = () => {
   const liftActive = Boolean(state.controlsVisible) && !playbackErrorText();
