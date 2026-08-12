@@ -1,4 +1,5 @@
 const root = document.getElementById("playerRoot");
+const progressBar = document.querySelector(".progress");
 const seek = document.getElementById("seek");
 const positionLabel = document.getElementById("position");
 const durationLabel = document.getElementById("duration");
@@ -2008,12 +2009,22 @@ const finishChromePointerInteraction = event => {
 };
 
 // Kirim state lift subtitle ke native HANYA saat berubah (guard biar gak spam).
+// Nilai = persen tinggi layar yang ketutupan bar (diukur dari tinggi bar aktual),
+// jadi auto-adaptif berapa pun ukuran window/bar. 0 = bar hilang -> posisi normal.
 let lastSubtitleLiftSent = null;
+const computeSubtitleLiftPercent = () => {
+  if (!progressBar) return 0;
+  const barHeight = progressBar.offsetHeight || 0;
+  const viewportHeight = window.innerHeight || 1;
+  if (barHeight <= 0 || viewportHeight <= 0) return 0;
+  return Math.min(60, Math.ceil((barHeight / viewportHeight) * 100));
+};
 const syncSubtitleLift = () => {
   const liftActive = Boolean(state.controlsVisible) && !playbackErrorText();
-  if (liftActive === lastSubtitleLiftSent) return;
-  lastSubtitleLiftSent = liftActive;
-  send("subtitleLift", liftActive ? 1 : 0);
+  const liftPercent = liftActive ? computeSubtitleLiftPercent() : 0;
+  if (liftPercent === lastSubtitleLiftSent) return;
+  lastSubtitleLiftSent = liftPercent;
+  send("subtitleLift", liftPercent);
 };
 
 const renderChrome = () => {
@@ -2305,6 +2316,11 @@ window.addEventListener("blur", () => {
   isChromeFocusInside = false;
   clearPressedButton();
   syncChromeAutoHideTimer(isOpeningOverlayActive());
+});
+
+// Ukuran bar bisa berubah pas window di-resize/fullscreen -> re-sync lift.
+window.addEventListener("resize", () => {
+  syncSubtitleLift();
 });
 
 document.querySelectorAll("[data-command]").forEach(button => {

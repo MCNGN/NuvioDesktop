@@ -551,19 +551,20 @@ internal class NativePlayerController(
         }
     }
 
-    override fun setSubtitleLiftActive(liftActive: Boolean) {
-        if (subtitleLiftActive == liftActive) return
-        subtitleLiftActive = liftActive
-        log.d { "setSubtitleLiftActive liftActive=$liftActive handle=$handle" }
+    override fun setSubtitleLiftPercent(liftPercent: Int) {
+        val clamped = liftPercent.coerceIn(0, 60)
+        if (subtitleLiftPercent == clamped) return
+        subtitleLiftPercent = clamped
+        log.d { "setSubtitleLiftPercent liftPercent=$clamped handle=$handle" }
         // Re-apply subtitle style dengan sub-pos yang digeser ke atas saat lift
         // (biar subtitle gak ketutupan control bar yang lagi muncul).
         applyPendingSubtitleSettings()
     }
 
     // Lift aktif = geser sub-pos lebih tinggi dari nilai user (control bar terlihat).
-    // sub-pos mpv: 0..150, makin besar makin tinggi di layar.
-    private var subtitleLiftActive = false
-    private val subtitleLiftOffset = 18
+    // sub-pos mpv: 0..150, makin KECIL makin tinggi di layar (0=atas, 100=bawah).
+    // JS mengirim persen layar yang ketutupan bar; kita kurangi dari posisi user.
+    private var subtitleLiftPercent = 0
 
     override fun applySubtitleStyle(style: SubtitleStyleState, useLibass: Boolean) {
         pendingSubtitleStyle = style
@@ -593,7 +594,7 @@ internal class NativePlayerController(
             outlineSize = if (style.outlineEnabled) style.outlineWidth.toFloat() else 0f,
             bold = style.bold,
             fontSize = style.toMpvSubtitleFontSize(),
-            subPos = if (subtitleLiftActive) (baseSubPos + subtitleLiftOffset).coerceIn(0, 150) else baseSubPos,
+            subPos = (baseSubPos - subtitleLiftPercent).coerceIn(0, 150),
             useLibass = useLibass,
         )
     }
