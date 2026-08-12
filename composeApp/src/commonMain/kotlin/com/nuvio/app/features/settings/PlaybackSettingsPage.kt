@@ -560,6 +560,14 @@ private fun PlaybackSettingsSection(
                     isTablet = isTablet,
                     onClick = { showAddonSubtitleStartupModeDialog = true },
                 )
+                SettingsGroupDivider(isTablet = isTablet)
+                SettingsNavigationRow(
+                    // string literal: string resource baru CMP bermasalah di setup Windows
+                    title = "Scroll Volume Step",
+                    description = "$volumeScrollStep% per notch",
+                    isTablet = isTablet,
+                    onClick = { showVolumeScrollStepDialog = true },
+                )
             }
         }
 
@@ -665,14 +673,6 @@ private fun PlaybackSettingsSection(
                         )
                     }
                 }
-                SettingsGroupDivider(isTablet = isTablet)
-                SettingsNavigationRow(
-                    // string literal: string resource baru CMP bermasalah di setup Windows
-                    title = "Scroll Volume Step",
-                    description = "$volumeScrollStep% per notch",
-                    isTablet = isTablet,
-                    onClick = { showVolumeScrollStepDialog = true },
-                )
             }
         }
 
