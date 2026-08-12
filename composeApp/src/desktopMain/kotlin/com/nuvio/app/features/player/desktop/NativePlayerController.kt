@@ -1211,6 +1211,8 @@ private fun StringBuilder.appendSubtitleOptionItemJson(item: PlayerControlSubtit
     append(',')
     appendJsonField("metadata", item.metadata)
     append(',')
+    appendJsonField("detail", item.detail)
+    append(',')
     appendJsonField("isSelected", item.isSelected)
     append('}')
 }
