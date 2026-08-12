@@ -2611,6 +2611,7 @@ private fun LibassRenderTypeDialog(
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun VolumeScrollStepDialog(
     selectedStep: Int,
     onStepSelected: (Int) -> Unit,
@@ -2645,7 +2646,7 @@ private fun VolumeScrollStepDialog(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    options.forEach { (step, labelRes) ->
+                    options.forEach { (step, label) ->
                         val isSelected = step == selectedStep
                         val containerColor = if (isSelected) {
                             MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
@@ -2667,7 +2668,7 @@ private fun VolumeScrollStepDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = stringResource(labelRes),
+                                    text = label,
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.weight(1f),
