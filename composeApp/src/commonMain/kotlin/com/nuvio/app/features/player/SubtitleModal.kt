@@ -3,6 +3,7 @@ package com.nuvio.app.features.player
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -369,6 +370,7 @@ private fun SubtitleLanguageRow(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun SubtitleOptionRow(
     option: SubtitleSelectionOption,
     selected: Boolean,
@@ -378,6 +380,7 @@ private fun SubtitleOptionRow(
     val sourceLabel: String
     val title: String
     val metadata: String?
+    val detail: String?
 
     when (option) {
         is SubtitleSelectionOption.BuiltIn -> {
@@ -392,16 +395,20 @@ private fun SubtitleOptionRow(
             } else {
                 null
             }
+            detail = null
         }
 
         is SubtitleSelectionOption.Addon -> {
             sourceLabel = option.subtitle.addonName ?: stringResource(Res.string.addon_title)
             title = languageLabelForCode(option.subtitle.language)
-            metadata = option.subtitle.detail.takeIf { it.isNotBlank() }
+            // Uploader di baris metadata; nama file/release di baris detail
+            // (dengan tooltip penuh saat hover).
+            metadata = option.subtitle.uploader.takeIf { it.isNotBlank() }
+                ?.let { stringResource(Res.string.player_addon_subtitle_uploader_format, it) }
                 ?: option.subtitle.display.takeIf { it.isNotBlank() && it != title }
+            detail = option.subtitle.detail.takeIf { it.isNotBlank() }
         }
     }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -432,6 +439,37 @@ private fun SubtitleOptionRow(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            detail?.let { detailText ->
+                // Nama file/release: ellipsis biar gak dobel baris; tooltip saat
+                // hover buat lihat nama file LENGKAP (sering kepotong).
+                androidx.compose.foundation.TooltipArea(
+                    tooltip = {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = tokens.colors.surfaceElevated,
+                            shadowElevation = 8.dp,
+                        ) {
+                            Text(
+                                text = detailText,
+                                color = tokens.colors.textPrimary,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    },
+                    delayMillis = 500,
+                ) {
+                    Text(
+                        text = detailText,
+                        color = if (selected) tokens.colors.onAccent.copy(alpha = 0.6f) else tokens.colors.textMuted.copy(alpha = 0.85f),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
         if (selected) {

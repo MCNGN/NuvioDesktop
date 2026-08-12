@@ -1066,6 +1066,15 @@ const appendSubtitleOptionRow = option => {
     metadata.textContent = option.metadata;
     copy.appendChild(metadata);
   }
+  if (option.detail) {
+    // Nama file/release: satu baris ellipsis; title = tooltip browser buat
+    // lihat nama file LENGKAP pas hover.
+    const detail = document.createElement("span");
+    detail.className = "subtitle-option-detail";
+    detail.textContent = option.detail;
+    detail.title = option.detail;
+    copy.appendChild(detail);
+  }
   row.appendChild(copy);
   row.appendChild(buildCheckIcon());
   addonSubtitleList.appendChild(row);

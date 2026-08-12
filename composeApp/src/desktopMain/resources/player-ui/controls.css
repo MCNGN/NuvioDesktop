@@ -2341,6 +2341,20 @@ button:disabled {
   white-space: nowrap;
 }
 
+.subtitle-option-detail {
+  overflow: hidden;
+  color: color-mix(in srgb, var(--theme-text-muted) 82%, transparent);
+  font-size: 11px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.track-row.selected .subtitle-option-detail {
+  color: color-mix(in srgb, var(--theme-on-accent) 70%, transparent);
+}
+
 .track-row.selected .subtitle-option-metadata,
 .track-row.selected .audio-track-language {
   color: color-mix(in srgb, var(--theme-on-accent) 82%, transparent);

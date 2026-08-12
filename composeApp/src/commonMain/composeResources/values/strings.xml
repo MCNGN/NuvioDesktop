@@ -2061,6 +2061,7 @@
     <string name="network_please_check_connection">Please check your connection and try again.</string>
     <string name="network_request_failed_http">Request failed with HTTP %1$d</string>
     <string name="player_addon_subtitle_display_format">%1$s (%2$s)</string>
+    <string name="player_addon_subtitle_uploader_format">by %1$s</string>
     <string name="player_error_mpv_unavailable">MPV player engine not available. Please rebuild the app.</string>
     <string name="player_error_unable_to_play_stream">Unable to play this stream.</string>
     <string name="plugins_badge_disabled">Plugins disabled</string>
