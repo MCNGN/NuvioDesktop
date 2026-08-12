@@ -586,6 +586,12 @@ internal class NativePlayerController(
 
     private fun applySubtitleStyle(handle: Long, style: SubtitleStyleState, useLibass: Boolean) {
         val baseSubPos = style.toMpvSubtitlePosition()
+        // Jarak subtitle dari bawah layar (%). sub-pos mpv: 100 = bawah, 0 = atas.
+        // Makin besar offset user, subtitle makin tinggi -> jarak dari bawah makin besar.
+        val distanceFromBottomPct = (100 - baseSubPos).coerceIn(0, 100)
+        // Cuma naikkan SISA yang kurang: kalau subtitle user sudah di atas bar
+        // (jarak >= tinggi bar), lift 0 -> posisi user dibiarkan apa adanya.
+        val neededLiftPct = (subtitleLiftPercent - distanceFromBottomPct).coerceAtLeast(0)
         NativePlayerBridge.applySubtitleStyle(
             handle = handle,
             textColor = style.textColor.toMpvColorString(),
@@ -594,7 +600,7 @@ internal class NativePlayerController(
             outlineSize = if (style.outlineEnabled) style.outlineWidth.toFloat() else 0f,
             bold = style.bold,
             fontSize = style.toMpvSubtitleFontSize(),
-            subPos = (baseSubPos - subtitleLiftPercent).coerceIn(0, 150),
+            subPos = (baseSubPos - neededLiftPct).coerceIn(0, 150),
             useLibass = useLibass,
         )
     }
