@@ -405,7 +405,7 @@ private fun SubtitleOptionRow(
             // Uploader di baris metadata; nama file/release di baris detail
             // (dengan tooltip penuh saat hover).
             metadata = option.subtitle.uploader.takeIf { it.isNotBlank() }
-                ?.let { stringResource(Res.string.player_addon_subtitle_uploader_format, it) }
+                ?.let { "by $it" }
                 ?: option.subtitle.display.takeIf { it.isNotBlank() && it != title }
             detail = option.subtitle.detail.takeIf { it.isNotBlank() }
         }

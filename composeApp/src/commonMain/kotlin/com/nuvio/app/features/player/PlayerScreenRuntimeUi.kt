@@ -1263,7 +1263,7 @@ private fun PlayerScreenRuntime.buildPlayerControlSubtitleSelection(): PlayerCon
                         sourceLabel = option.subtitle.addonName ?: addonLabel,
                         title = title,
                         metadata = option.subtitle.uploader.takeIf { it.isNotBlank() }
-                            ?.let { stringResource(Res.string.player_addon_subtitle_uploader_format, it) }
+                            ?.let { "by $it" }
                             ?: option.subtitle.display.takeIf {
                                 it.isNotBlank() && it != title
                             }.orEmpty(),
