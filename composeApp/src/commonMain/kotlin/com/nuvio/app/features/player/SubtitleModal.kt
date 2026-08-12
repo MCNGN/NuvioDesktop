@@ -378,6 +378,7 @@ private fun SubtitleOptionRow(
     val sourceLabel: String
     val title: String
     val metadata: String?
+    val detail: String?
 
     when (option) {
         is SubtitleSelectionOption.BuiltIn -> {
@@ -392,15 +393,20 @@ private fun SubtitleOptionRow(
             } else {
                 null
             }
+            detail = null
         }
 
         is SubtitleSelectionOption.Addon -> {
             sourceLabel = option.subtitle.addonName ?: stringResource(Res.string.addon_title)
             title = languageLabelForCode(option.subtitle.language)
-            metadata = option.subtitle.display.takeIf { it.isNotBlank() && it != title }
+            // Uploader di baris metadata; nama file/release di baris detail
+            // (dengan tooltip penuh saat hover).
+            metadata = option.subtitle.uploader.takeIf { it.isNotBlank() }
+                ?.let { "by $it" }
+                ?: option.subtitle.display.takeIf { it.isNotBlank() && it != title }
+            detail = option.subtitle.detail.takeIf { it.isNotBlank() }
         }
     }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -423,6 +429,18 @@ private fun SubtitleOptionRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            detail?.let { detailText ->
+                // Nama file/release: baris sendiri biar gak dobel baris; ellipsis
+                // kalau kepanjangan. (TooltipArea CMP bermasalah render kontennya,
+                // jadi pakai Text biasa biar nama file pasti kelihatan.)
+                Text(
+                    text = detailText,
+                    color = if (selected) tokens.colors.onAccent.copy(alpha = 0.6f) else tokens.colors.textMuted.copy(alpha = 0.85f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             metadata?.let {
                 Text(
                     text = it,

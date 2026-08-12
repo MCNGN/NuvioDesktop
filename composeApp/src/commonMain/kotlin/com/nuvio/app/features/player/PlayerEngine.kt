@@ -282,6 +282,7 @@ data class PlayerControlSubtitleOptionItem(
     val sourceLabel: String = "",
     val title: String = "",
     val metadata: String = "",
+    val detail: String = "",
     val isSelected: Boolean = false,
 )
 

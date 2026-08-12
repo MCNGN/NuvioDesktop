@@ -988,6 +988,7 @@ const subtitleSelectionOptions = () => normalizeItems(state.subtitleOptionItems)
   sourceLabel: String(item.sourceLabel || ""),
   title: String(item.title || ""),
   metadata: String(item.metadata || ""),
+  detail: String(item.detail || ""),
   selected: Boolean(item.isSelected),
   index: Number(item.index) || 0,
 }));
@@ -1060,6 +1061,15 @@ const appendSubtitleOptionRow = option => {
   title.className = "subtitle-option-title";
   title.textContent = option.title;
   copy.appendChild(title);
+  if (option.detail) {
+    // Nama file/release: satu baris ellipsis; title = tooltip browser buat
+    // lihat nama file LENGKAP pas hover.
+    const detail = document.createElement("span");
+    detail.className = "subtitle-option-detail";
+    detail.textContent = option.detail;
+    detail.title = option.detail;
+    copy.appendChild(detail);
+  }
   if (option.metadata) {
     const metadata = document.createElement("span");
     metadata.className = "subtitle-option-metadata";
