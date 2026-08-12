@@ -20,6 +20,7 @@ interface PlayerEngineController {
     fun clearExternalSubtitleAndSelect(trackIndex: Int)
     fun applySubtitleStyle(style: SubtitleStyleState, useLibass: Boolean = false) {}
     fun setSubtitleDelayMs(delayMs: Int) {}
+    fun setSubtitleLiftActive(liftActive: Boolean) {}
     fun configureIosVideoOutput(settings: PlayerSettingsUiState) {}
     fun updateNowPlayingMetadata(info: PlayerNowPlayingInfo) {}
     fun clearNowPlayingInfo() {}

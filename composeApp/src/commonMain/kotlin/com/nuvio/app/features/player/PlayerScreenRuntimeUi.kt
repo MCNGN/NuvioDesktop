@@ -837,6 +837,11 @@ private fun PlayerScreenRuntime.handlePlayerControlsEvent(type: String, value: D
         }
         "subtitleDelayDelta" -> setSubtitleDelay((subtitleDelayMs + value.toInt()).coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS))
         "subtitleDelayReset" -> setSubtitleDelay(0)
+        "subtitleLift" -> {
+            // Control bar muncul (1) / hilang (0) -> geser subtitle ke atas biar
+            // gak ketutupan bar, lalu balikin pas bar auto-hide.
+            playerController?.setSubtitleLiftActive(value > 0)
+        }
         "subtitleAutoSyncCapture" -> captureSubtitleAutoSyncTime()
         "subtitleAutoSyncReload" -> loadSubtitleAutoSyncCues(force = true)
         "subtitleAutoSyncCue" -> {

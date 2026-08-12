@@ -551,6 +551,20 @@ internal class NativePlayerController(
         }
     }
 
+    override fun setSubtitleLiftActive(liftActive: Boolean) {
+        if (subtitleLiftActive == liftActive) return
+        subtitleLiftActive = liftActive
+        log.d { "setSubtitleLiftActive liftActive=$liftActive handle=$handle" }
+        // Re-apply subtitle style dengan sub-pos yang digeser ke atas saat lift
+        // (biar subtitle gak ketutupan control bar yang lagi muncul).
+        applyPendingSubtitleSettings()
+    }
+
+    // Lift aktif = geser sub-pos lebih tinggi dari nilai user (control bar terlihat).
+    // sub-pos mpv: 0..150, makin besar makin tinggi di layar.
+    private var subtitleLiftActive = false
+    private val subtitleLiftOffset = 18
+
     override fun applySubtitleStyle(style: SubtitleStyleState, useLibass: Boolean) {
         pendingSubtitleStyle = style
         pendingUseLibass = useLibass
@@ -570,6 +584,7 @@ internal class NativePlayerController(
     }
 
     private fun applySubtitleStyle(handle: Long, style: SubtitleStyleState, useLibass: Boolean) {
+        val baseSubPos = style.toMpvSubtitlePosition()
         NativePlayerBridge.applySubtitleStyle(
             handle = handle,
             textColor = style.textColor.toMpvColorString(),
@@ -578,7 +593,7 @@ internal class NativePlayerController(
             outlineSize = if (style.outlineEnabled) style.outlineWidth.toFloat() else 0f,
             bold = style.bold,
             fontSize = style.toMpvSubtitleFontSize(),
-            subPos = style.toMpvSubtitlePosition(),
+            subPos = if (subtitleLiftActive) (baseSubPos + subtitleLiftOffset).coerceIn(0, 150) else baseSubPos,
             useLibass = useLibass,
         )
     }

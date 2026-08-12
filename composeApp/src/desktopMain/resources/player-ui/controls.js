@@ -2007,6 +2007,15 @@ const finishChromePointerInteraction = event => {
   noteChromeActivity(true);
 };
 
+// Kirim state lift subtitle ke native HANYA saat berubah (guard biar gak spam).
+let lastSubtitleLiftSent = null;
+const syncSubtitleLift = () => {
+  const liftActive = Boolean(state.controlsVisible) && !playbackErrorText();
+  if (liftActive === lastSubtitleLiftSent) return;
+  lastSubtitleLiftSent = liftActive;
+  send("subtitleLift", liftActive ? 1 : 0);
+};
+
 const renderChrome = () => {
   const durationMs = Math.max(0, Number(state.durationMs) || 0);
   const positionMs = isScrubbing ? scrubPositionMs : Math.max(0, Number(state.positionMs) || 0);
@@ -2014,6 +2023,7 @@ const renderChrome = () => {
   const showError = renderPlaybackError();
   root.classList.toggle("chrome-hidden", Boolean(showError || !state.controlsVisible));
   root.classList.toggle("source-visible", Boolean(!showError && !isPlaying && !state.isLoading && (state.streamTitle || state.providerName)));
+  syncSubtitleLift();
   syncHiddenCursor();
   const showOpening = renderOpeningOverlay(showError);
   renderPauseMetadataOverlay(showOpening || showError);
