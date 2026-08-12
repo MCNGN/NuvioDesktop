@@ -1,10 +1,9 @@
 name: Sync upstream release
 
-# Level 2 sync: hanya merge ketika upstream punya RELEASE/TAG baru,
-# bukan setiap commit kecil. Cek tiap 6 jam + bisa trigger manual.
+# Sync manual: tidak ada cron/otomatis. Jalan pas kamu klik "Run workflow"
+# di tab Actions. Cek tag rilis terbaru upstream; kalau ada yang baru &
+# belum masuk feat/player-complete → merge + push. Kalau nggak ada → skip.
 on:
-  schedule:
-    - cron: "17 */6 * * *"
   workflow_dispatch:
 
 permissions:
