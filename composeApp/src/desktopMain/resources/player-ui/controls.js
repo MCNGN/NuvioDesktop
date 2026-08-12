@@ -988,6 +988,7 @@ const subtitleSelectionOptions = () => normalizeItems(state.subtitleOptionItems)
   sourceLabel: String(item.sourceLabel || ""),
   title: String(item.title || ""),
   metadata: String(item.metadata || ""),
+  detail: String(item.detail || ""),
   selected: Boolean(item.isSelected),
   index: Number(item.index) || 0,
 }));

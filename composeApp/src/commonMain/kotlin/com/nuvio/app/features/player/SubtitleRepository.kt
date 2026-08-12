@@ -85,8 +85,6 @@ object SubtitleRepository {
                         // Ditampilkan terpisah biar gak kepotong di baris yang sama.
                         val detail = obj.stringValue("name").orEmpty()
                         val uploader = obj.stringValue("uploader").orEmpty()
-                        // DEBUG subtitle-uploader: hapus setelah fitur dipastikan jalan
-                        println("[SubSource-DEBUG] lang=$rawLang name=${obj["name"]} uploader=${obj["uploader"]} detail='$detail' uploaderField='$uploader'")
 
                         allSubs.add(
                             AddonSubtitle(
