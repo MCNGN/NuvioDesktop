@@ -238,8 +238,18 @@ internal fun PlayerScreenRuntime.refreshTracks() {
                 ) {
                     disableAutomaticSubtitleSelection()
                 }
+                // Track embedded nggak ada yang cocok dengan preferensi →
+                // fallback ke subtitle addon (SubDL/SubSource) yang sudah ke-fetch.
+                tryAutoSelectAddonSubtitle(selectionPlan.targets)
             }
             preferredSubtitleSelectionApplied = true
+        } else if (subtitleTracks.isEmpty()) {
+            // Film tanpa track subtitle embedded sama sekali —
+            // auto-select langsung dari subtitle addon kalau match preferensi.
+            tryAutoSelectAddonSubtitle(selectionPlan.targets)
+            if (!isLoadingAddonSubtitles) {
+                preferredSubtitleSelectionApplied = true
+            }
         }
     }
 }
@@ -251,4 +261,22 @@ private fun PlayerScreenRuntime.disableAutomaticSubtitleSelection() {
     selectedSubtitleIndex = -1
     selectedAddonSubtitleId = null
     useCustomSubtitles = false
+}
+
+/**
+ * Fallback auto-select: kalau track embedded nggak ada yang cocok dengan
+ * preferensi bahasa, coba cari di subtitle addon (SubDL/SubSource) yang
+ * sudah ke-fetch. No-op kalau subtitle sudah aktif.
+ */
+internal fun PlayerScreenRuntime.tryAutoSelectAddonSubtitle(targets: List<String>) {
+    if (selectedSubtitleIndex != -1 || selectedAddonSubtitleId != null) return
+    if (targets.isEmpty()) return
+    val match = addonSubtitles.firstOrNull { subtitle ->
+        targets.any { target -> languageMatchesPreference(subtitle.language, target) }
+    } ?: return
+    selectedAddonSubtitleId = match.id
+    selectedSubtitleIndex = -1
+    useCustomSubtitles = true
+    persistAddonSubtitlePreference(match)
+    playerController?.setSubtitleUri(match.url)
 }

@@ -212,6 +212,15 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         fetchAddonSubtitlesForActiveItem()
     }
 
+    // Pas fetch subtitle addon selesai (loading true → false), panggil ulang
+    // refreshTracks biar auto-select preferensi bahasa bisa fallback ke
+    // subtitle addon (yang pas refreshTracks pertama masih kosong).
+    LaunchedEffect(isLoadingAddonSubtitles, playerController) {
+        if (!isLoadingAddonSubtitles && playerController != null) {
+            refreshTracks()
+        }
+    }
+
     LaunchedEffect(playbackSnapshot.isLoading, playerController) {
         if (!playbackSnapshot.isLoading && playerController != null) {
             refreshTracks()
