@@ -42,7 +42,7 @@ internal class NativePlayerController(
         const val TEARDOWN_WAIT_MS = 5_000L
 
         @Volatile
-        var rememberedVolumeLevel: Float = 1f
+        var rememberedVolumeLevel: Float = DesktopPlayerVolumeStorage.loadVolumeLevel() ?: 1f
     }
 
     @Volatile
@@ -351,6 +351,7 @@ internal class NativePlayerController(
         if (current != 0L) {
             val nextLevel = level.coerceIn(0f, 1f)
             rememberedVolumeLevel = nextLevel
+            DesktopPlayerVolumeStorage.saveVolumeLevel(nextLevel)
             NativePlayerBridge.setVolume(current, nextLevel)
             controlsState = controlsState.copy(volumeLevel = nextLevel)
             updateControls(controlsState)
@@ -854,6 +855,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         append(',')
         appendJsonField("subtitleStyleTabLabel", subtitleStyleTabLabel)
         append(',')
+        appendJsonField("customSubtitleStyleLabel", customSubtitleStyleLabel)
+        append(',')
         appendJsonField("forcedLabel", forcedLabel)
         append(',')
         appendJsonField("noneLabel", noneLabel)
@@ -1048,6 +1051,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         append(',')
         appendJsonField("useCustomSubtitles", useCustomSubtitles)
         append(',')
+        appendJsonField("customSubtitleStylingEnabled", customSubtitleStylingEnabled)
+        append(',')
         appendJsonField("subtitleDelayMs", subtitleDelayMs)
         append(',')
         appendJsonField("hasSelectedAddonSubtitle", hasSelectedAddonSubtitle)
@@ -1158,9 +1163,31 @@ private fun StringBuilder.appendSourceItemJson(item: PlayerControlSourceItem) {
     append(',')
     appendJsonField("addonName", item.addonName)
     append(',')
+    appendJsonField("addonLogo", item.addonLogo)
+    append(',')
+    appendJsonField("showAddonLogo", item.showAddonLogo)
+    append(',')
     appendJsonField("isCurrent", item.isCurrent)
     append(',')
     appendJsonField("isEnabled", item.isEnabled)
+    append(',')
+    appendJsonField("formattedSize", item.formattedSize)
+    append(',')
+    appendJsonField("badgePlacement", item.badgePlacement)
+    append(',')
+    appendJsonArrayField("badges", item.badges) { badge ->
+        append('{')
+        appendJsonField("name", badge.name)
+        append(',')
+        appendJsonField("imageURL", badge.imageURL)
+        append(',')
+        appendJsonField("tagColor", badge.tagColor)
+        append(',')
+        appendJsonField("tagStyle", badge.tagStyle)
+        append(',')
+        appendJsonField("borderColor", badge.borderColor)
+        append('}')
+    }
     append('}')
 }
 
