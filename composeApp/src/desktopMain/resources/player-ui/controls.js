@@ -2794,6 +2794,19 @@ document.addEventListener("wheel", event => {
 // Flag ini mencegah root-click handler ikut toggle chrome (dobel aksi).
 let suppressChromeToggleClick = false;
 document.addEventListener("pointerdown", event => {
+  // Mouse side buttons: navigate playback by the standard seek interval.
+  if (event.button === 3) {
+    event.preventDefault();
+    showCommandToast("seekBack");
+    send("seekBack", 0);
+    return;
+  }
+  if (event.button === 4) {
+    event.preventDefault();
+    showCommandToast("seekForward");
+    send("seekForward", 0);
+    return;
+  }
   if (event.button !== 0) return;
   if (isChromeInteractionTarget(event.target)) return;
   event.preventDefault();
