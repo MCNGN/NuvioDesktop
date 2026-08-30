@@ -29,6 +29,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import javax.swing.SwingUtilities
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
 import kotlin.concurrent.Volatile
 
 internal class NativePlayerController(
@@ -202,6 +204,17 @@ internal class NativePlayerController(
         host.onCursorActivity = {
             this.onEvent("cursorActivity", 0.0)
         }
+    }
+
+    fun installWindowFocusForwarding(): (() -> Unit)? {
+        val window = SwingUtilities.getWindowAncestor(host) ?: return null
+        val listener = object : WindowAdapter() {
+            override fun windowGainedFocus(event: WindowEvent) {
+                requestKeyboardFocus()
+            }
+        }
+        window.addWindowFocusListener(listener)
+        return { window.removeWindowFocusListener(listener) }
     }
 
     fun updateControls(state: PlayerControlsState) {
@@ -603,6 +616,7 @@ internal class NativePlayerController(
             fontSize = style.toMpvSubtitleFontSize(),
             subPos = (baseSubPos - neededLiftPct).coerceIn(0, 150),
             useLibass = useLibass,
+            stripSdh = style.stripSdh,
         )
     }
 

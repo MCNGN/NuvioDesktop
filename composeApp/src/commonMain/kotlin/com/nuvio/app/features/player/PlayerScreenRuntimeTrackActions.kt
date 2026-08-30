@@ -204,7 +204,7 @@ internal fun PlayerScreenRuntime.refreshTracks() {
         val selectedAudioTrack = audioTracks.firstOrNull { track -> track.index == selectedAudioIndex }
             ?: audioTracks.firstOrNull { it.isSelected }
         val selectionPlan = resolveSubtitleAutoSelectionPlan(
-            selectedAudioLanguage = resolveAudioTrackLanguageTarget(selectedAudioTrack),
+            selectedAudioTrack = selectedAudioTrack,
             preferredAudioTargets = preferredAudioTargets,
             preferredSubtitleTargets = preferredSubtitleTargets,
             useForcedSubtitles = subtitleStyle.useForcedSubtitles,

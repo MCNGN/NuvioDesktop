@@ -42,6 +42,12 @@ internal enum class SubtitleTab {
     Style,
 }
 
+enum class AddonSubtitleStartupMode {
+    FAST_STARTUP,
+    PREFERRED_ONLY,
+    ALL_SUBTITLES,
+}
+
 const val SUBTITLE_DELAY_MIN_MS = -60_000
 const val SUBTITLE_DELAY_MAX_MS = 60_000
 const val SUBTITLE_DELAY_STEP_MS = 100
