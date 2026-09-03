@@ -473,10 +473,15 @@ const settingToastLabel = command => {
   return "";
 };
 
+const maxVolumeLevel = 2;
+const standardMaxVolumeLevel = 1;
+const volumeStepLevel = 0.05;
+const clampVolumeLevel = level => Math.max(0, Math.min(maxVolumeLevel, level));
+
 const volumeToastLabel = (fallbackDelta = 0) => {
   const volumeLevel = state.volumeLevel;
   if (typeof volumeLevel === "number" && Number.isFinite(volumeLevel)) {
-    return `Volume ${Math.round(Math.max(0, Math.min(1, volumeLevel)) * 100)}%`;
+    return `Volume ${Math.round(clampVolumeLevel(volumeLevel) * 100)}%`;
   }
   return fallbackDelta < 0 ? "Volume down" : "Volume up";
 };
@@ -485,12 +490,14 @@ const syncVolumeControl = () => {
   if (!volumeControl || !volumeSlider || !volumeIcon) return;
   const volumeLevel = state.volumeLevel;
   const hasLevel = typeof volumeLevel === "number" && Number.isFinite(volumeLevel);
-  const clampedLevel = hasLevel ? Math.max(0, Math.min(1, volumeLevel)) : 1;
+  const clampedLevel = hasLevel ? clampVolumeLevel(volumeLevel) : 1;
   const percent = Math.round(clampedLevel * 100);
+  const sliderPosition = Math.round((clampedLevel / maxVolumeLevel) * 100);
   const label = `Volume ${percent}%`;
-  volumeControl.style.setProperty("--volume", `${percent}%`);
+  volumeControl.style.setProperty("--volume-position", `${sliderPosition}%`);
   volumeSlider.value = String(percent);
   volumeSlider.setAttribute("aria-label", label);
+  volumeSlider.setAttribute("aria-valuetext", percent > 100 ? `${percent}%, boosted` : `${percent}%`);
   volumeSlider.setAttribute("title", label);
   volumeIcon.setAttribute("href", percent === 0 ? "#icon-volume-muted" : "#icon-volume");
 };
@@ -498,7 +505,7 @@ const syncVolumeControl = () => {
 const nextVolumeToastLabel = delta => {
   const volumeLevel = state.volumeLevel;
   if (typeof volumeLevel === "number" && Number.isFinite(volumeLevel)) {
-    const nextLevel = Math.max(0, Math.min(1, volumeLevel + (delta * 0.05)));
+    const nextLevel = clampVolumeLevel(volumeLevel + (delta * volumeStepLevel));
     return `Volume ${Math.round(nextLevel * 100)}%`;
   }
   return volumeToastLabel(delta);
@@ -2771,7 +2778,7 @@ seek.addEventListener("change", () => {
 
 volumeSlider.addEventListener("input", () => {
   noteChromeActivity();
-  const percent = Math.max(0, Math.min(100, Number(volumeSlider.value) || 0));
+  const percent = Math.max(0, Math.min(maxVolumeLevel * 100, Number(volumeSlider.value) || 0));
   const nextLevel = percent / 100;
   state.volumeLevel = nextLevel;
   syncVolumeControl();
