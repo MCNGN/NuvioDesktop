@@ -1147,7 +1147,7 @@ private fun StringBuilder.appendJsonField(name: String, value: Float?) {
     if (value == null || value.isNaN() || value.isInfinite()) {
         append("null")
     } else {
-        append(value.coerceIn(0f, 1f))
+        append(value.coerceIn(0f, 2f))
     }
 }
 
