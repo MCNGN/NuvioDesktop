@@ -2797,10 +2797,15 @@ volumeSlider.addEventListener("input", () => {
 document.addEventListener("wheel", event => {
   if (isChromeInteractionTarget(event.target)) return;
   event.preventDefault();
-  const step = volumeScrollStepPercent;
-  const delta = event.deltaY < 0 ? step : -step;
-  showPlayerToast(nextVolumeToastLabel(delta > 0 ? step / 5 : -step / 5));
-  send("volumeScroll", delta);
+  const step = volumeScrollStepPercent / 100;
+  const currentLevel = typeof state.volumeLevel === "number" && Number.isFinite(state.volumeLevel)
+    ? state.volumeLevel
+    : 1;
+  const nextLevel = clampVolumeLevel(currentLevel + (event.deltaY < 0 ? step : -step));
+  state.volumeLevel = nextLevel;
+  syncVolumeControl();
+  showPlayerToast(volumeToastLabel());
+  send("volumeChange", nextLevel);
 }, { passive: false });
 
 
