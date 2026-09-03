@@ -562,6 +562,13 @@ private fun PlaybackSettingsSection(
                     isTablet = isTablet,
                     onClick = { showAddonSubtitleStartupModeDialog = true },
                 )
+                SettingsGroupDivider(isTablet = isTablet)
+                SettingsNavigationRow(
+                    title = "Scroll Volume Step",
+                    description = "$volumeScrollStep% per notch",
+                    isTablet = isTablet,
+                    onClick = { showVolumeScrollStepDialog = true },
+                )
             }
         }
 
