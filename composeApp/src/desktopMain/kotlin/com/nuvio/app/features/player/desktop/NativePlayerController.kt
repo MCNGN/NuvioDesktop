@@ -363,10 +363,12 @@ internal class NativePlayerController(
     private fun adjustFallbackVolume(delta: Float) {
         val current = handle
         if (current != 0L) {
+            val nativeLevel = NativePlayerBridge.volume(current)
+                .coerceDesktopPlayerVolumeLevel()
             val currentLevel = resolveDesktopPlayerVolumeLevel(
                 requestedLevel = null,
-                currentLevel = currentVolumeLevel,
-                rememberedLevel = rememberedVolumeLevel,
+                currentLevel = nativeLevel,
+                rememberedLevel = currentVolumeLevel,
             )
             val nextLevel = (currentLevel + (delta / 100f)).coerceDesktopPlayerVolumeLevel()
             setFallbackVolume(nextLevel)
