@@ -396,13 +396,7 @@ let playerToastTimer = 0;
 let playerToastToken = 0;
 let pendingSettingToastCommand = "";
 let pendingSettingToastToken = 0;
-let pendingVolumeToast = false;
 let showRemainingTime = false;  // klik label waktu: elapsed -> sisa waktu
-// Step scroll volume (persen per notch wheel). Persist biar gak reset tiap buka.
-let volumeScrollStepPercent = (() => {
-  const saved = Number(localStorage.getItem("nuvio.volumeScrollStep"));
-  return saved === 1 || saved === 5 ? saved : 5;
-})();
 const prefersReducedMotion = window.matchMedia &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const modalTransitionMs = prefersReducedMotion ? 1 : 240;
@@ -2371,9 +2365,17 @@ const keepChromeVisibleFromKeyboard = () => {
 };
 
 const sendKeyboardVolume = delta => {
-  pendingVolumeToast = true;
-  showPlayerToast(nextVolumeToastLabel(delta));
-  send(delta < 0 ? "keyboardVolumeDown" : "keyboardVolumeUp", 0);
+  const currentLevel = typeof state.volumeLevel === "number" && Number.isFinite(state.volumeLevel)
+    ? state.volumeLevel
+    : 1;
+  const adjustedLevel = currentLevel + (delta * volumeStepLevel);
+  const nextLevel = delta > 0
+    ? Math.min(standardMaxVolumeLevel, clampVolumeLevel(adjustedLevel))
+    : clampVolumeLevel(adjustedLevel);
+  state.volumeLevel = nextLevel;
+  syncVolumeControl();
+  showPlayerToast(volumeToastLabel(delta));
+  send("volumeChange", nextLevel);
 };
 
 const setChromeVisibleFromKeyboard = (visible, { focusAction = false } = {}) => {
@@ -2785,18 +2787,6 @@ volumeSlider.addEventListener("input", () => {
   send("volumeChange", nextLevel);
 });
 
-// Scroll wheel di area video = atur volume (delta dalam persen).
-// Scroll di dalam panel/modal tetap dipakai buat scroll konten.
-document.addEventListener("wheel", event => {
-  if (isChromeInteractionTarget(event.target)) return;
-  event.preventDefault();
-  const step = volumeScrollStepPercent;
-  const delta = event.deltaY < 0 ? step : -step;
-  pendingVolumeToast = true;
-  showPlayerToast(nextVolumeToastLabel(delta > 0 ? step / 5 : -step / 5));
-  send("volumeScroll", delta);
-}, { passive: false });
-
 // Klik kiri di area video (di luar kontrol) = toggle pause/play.
 // Flag ini mencegah root-click handler ikut toggle chrome (dobel aksi).
 let suppressChromeToggleClick = false;
@@ -2880,12 +2870,6 @@ const currentPlaybackState = pendingIsPlaying === null
     ? state.isPlaying
     : pendingIsPlaying;
   state = { ...state, ...nextState, isPlaying: currentPlaybackState };
-  // Scroll step dari Settings -> Playback (repository native). Kalau dikirim,
-  // menang atas localStorage; kalau tidak ada, fallback ke nilai lokal.
-  const nativeStep = Number(nextState.volumeScrollStep);
-  if (nativeStep === 1 || nativeStep === 5) {
-    volumeScrollStepPercent = nativeStep;
-  }
   hasReceivedPlayerControls = true;
   const closeToken = Number(state.closeModalsToken) || 0;
   if (closeToken !== previousCloseToken) {
@@ -2944,6 +2928,13 @@ root.addEventListener("dblclick", event => {
   window.clearTimeout(tapTimer);
   togglePlayerFullscreen();
 });
+
+root.addEventListener("wheel", event => {
+  if (activeModal) return;
+  event.preventDefault();
+  const delta = Math.sign(event.deltaY) * -1;
+  if (delta !== 0) sendKeyboardVolume(delta);
+}, { passive: false });
 
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && activeModal) {
