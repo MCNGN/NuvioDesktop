@@ -1261,8 +1261,10 @@ const renderSubtitleStylePanel = () => {
     : (state.offLabel || "Off");
   customSubtitleStyleToggle.classList.toggle("primary", customStylingEnabled);
   customSubtitleStyleToggle.setAttribute("aria-pressed", customStylingEnabled ? "true" : "false");
-  customSubtitleStyleControls.classList.toggle("disabled", !customStylingEnabled);
-  customSubtitleStyleControls.setAttribute("aria-disabled", customStylingEnabled ? "false" : "true");
+  // Custom style controls remain interactive; native decides whether an
+  // ASS/SSA track keeps its own libass styling.
+  customSubtitleStyleControls.classList.remove("disabled");
+  customSubtitleStyleControls.setAttribute("aria-disabled", "false");
   fontSizeLabel.textContent = state.fontSizeLabel || "Font Size";
   fontSizeValue.textContent = `${Number(style.fontSizeSp) || 18}sp`;
   outlineLabel.textContent = state.outlineLabel || "Outline";
@@ -2943,7 +2945,7 @@ root.addEventListener("click", event => {
 
 root.addEventListener("dblclick", event => {
   if (playbackErrorText()) return;
-  if (event.target.closest("button,input")) return;
+  if (isChromeInteractionTarget(event.target)) return;
   event.preventDefault();
   window.clearTimeout(tapTimer);
   togglePlayerFullscreen();
