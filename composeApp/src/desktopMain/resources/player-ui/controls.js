@@ -419,6 +419,7 @@ const chromeInteractionSelector = [
   ".header-actions",
   ".center-controls",
   ".progress",
+  ".time-label",
   ".modal-layer",
   ".skip-prompt",
   ".next-episode-card",
@@ -2835,7 +2836,9 @@ document.addEventListener("pointerdown", event => {
 // Klik label waktu = toggle elapsed <-> sisa waktu (remaining).
 if (timeLabel) {
   timeLabel.style.cursor = "pointer";
-  timeLabel.addEventListener("click", () => {
+  timeLabel.addEventListener("click", event => {
+    event.preventDefault();
+    event.stopPropagation();
     noteChromeActivity();
     showRemainingTime = !showRemainingTime;
     setProgress(state.positionMs || 0, state.durationMs || 0);
