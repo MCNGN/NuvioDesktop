@@ -5,6 +5,7 @@ const positionLabel = document.getElementById("position");
 const durationLabel = document.getElementById("duration");
 const timeLabel = document.getElementById("timeLabel");
 const volumeControl = document.getElementById("volumeControl");
+const volumeButton = document.getElementById("volumeButton");
 const volumeIcon = document.getElementById("volumeIcon");
 const volumeSlider = document.getElementById("volumeSlider");
 const bufferingStatus = document.getElementById("bufferingStatus");
@@ -72,6 +73,9 @@ const sourcesButton = document.getElementById("sourcesButton");
 const episodesButton = document.getElementById("episodesButton");
 const audioModal = document.getElementById("audioModal");
 const subtitleModal = document.getElementById("subtitleModal");
+const speedModal = document.getElementById("speedModal");
+const speedOptionList = document.getElementById("speedOptionList");
+const speedPanelTitle = document.getElementById("speedPanelTitle");
 const audioPanelTitle = document.getElementById("audioPanelTitle");
 const audioTrackList = document.getElementById("audioTrackList");
 const subtitleTrackList = document.getElementById("subtitleTrackList");
@@ -160,6 +164,8 @@ const p2pConsentBody = document.getElementById("p2pConsentBody");
 const p2pConsentCancelButton = document.getElementById("p2pConsentCancelButton");
 const p2pConsentEnableButton = document.getElementById("p2pConsentEnableButton");
 const playerToast = document.getElementById("playerToast");
+const playerToastIcon = document.getElementById("playerToastIcon");
+const playerToastIconUse = document.getElementById("playerToastIconUse");
 const playerToastText = document.getElementById("playerToastText");
 
 let state = {
@@ -362,6 +368,8 @@ let lastNativeIsPlaying = true;
 let suppressNextPointerToggleClick = false;
 let pendingCustomSubtitleStyling = null;
 let pendingCustomSubtitleStylingTimer = 0;
+let pendingSpeedIndex = null;
+let pendingSpeedTimer = 0;
 let submitIntroDraft = {
   segmentType: "intro",
   startTime: "00:00",
@@ -451,20 +459,34 @@ const togglePlayerFullscreen = () => {
 
 const hidePlayerToast = token => {
   if (!playerToast || (token != null && token !== playerToastToken)) return;
+  if (typeof isSpeedBoosting !== "undefined" && isSpeedBoosting) {
+    showPlayerToast("2x", { icon: "icon-speed", persistent: true });
+    return;
+  }
   playerToast.classList.remove("visible");
   playerToast.setAttribute("aria-hidden", "true");
 };
 
-const showPlayerToast = (message, { durationMs = playerToastDurationMs } = {}) => {
+const showPlayerToast = (message, { durationMs = playerToastDurationMs, icon = null, persistent = false } = {}) => {
   const cleanMessage = String(message || "").trim();
   if (!playerToast || !playerToastText || !cleanMessage) return;
   window.clearTimeout(playerToastTimer);
   playerToastToken += 1;
   const token = playerToastToken;
   playerToastText.textContent = cleanMessage;
+  if (playerToastIcon && playerToastIconUse) {
+    if (icon) {
+      playerToastIconUse.setAttribute("href", icon.startsWith("#") ? icon : `#${icon}`);
+      playerToastIcon.removeAttribute("hidden");
+    } else {
+      playerToastIcon.setAttribute("hidden", "hidden");
+    }
+  }
   playerToast.setAttribute("aria-hidden", "false");
   playerToast.classList.add("visible");
-  playerToastTimer = window.setTimeout(() => hidePlayerToast(token), durationMs);
+  if (!persistent && durationMs > 0) {
+    playerToastTimer = window.setTimeout(() => hidePlayerToast(token), durationMs);
+  }
 };
 
 const settingToastLabel = command => {
@@ -481,9 +503,12 @@ const clampVolumeLevel = level => Math.max(0, Math.min(maxVolumeLevel, level));
 const volumeToastLabel = (fallbackDelta = 0) => {
   const volumeLevel = state.volumeLevel;
   if (typeof volumeLevel === "number" && Number.isFinite(volumeLevel)) {
-    return `Volume ${Math.round(clampVolumeLevel(volumeLevel) * 100)}%`;
+    const percent = Math.round(clampVolumeLevel(volumeLevel) * 100);
+    const mutedStr = state.mutedLabel || "";
+    const volumeFormat = state.volumeLevelLabelFormat || "";
+    return percent === 0 ? mutedStr : volumeFormat.replace("%s", `${percent}%`).replace("%1$s", `${percent}%`);
   }
-  return fallbackDelta < 0 ? "Volume down" : "Volume up";
+  return "";
 };
 
 const syncVolumeControl = () => {
@@ -493,7 +518,9 @@ const syncVolumeControl = () => {
   const clampedLevel = hasLevel ? clampVolumeLevel(volumeLevel) : 1;
   const percent = Math.round(clampedLevel * 100);
   const sliderPosition = Math.round((clampedLevel / maxVolumeLevel) * 100);
-  const label = `Volume ${percent}%`;
+  const mutedStr = state.mutedLabel || "";
+  const volumeFormat = state.volumeLevelLabelFormat || "";
+  const label = percent === 0 ? mutedStr : volumeFormat.replace("%s", `${percent}%`).replace("%1$s", `${percent}%`);
   volumeControl.style.setProperty("--volume-position", `${sliderPosition}%`);
   volumeSlider.value = String(percent);
   volumeSlider.setAttribute("aria-label", label);
@@ -509,6 +536,37 @@ const nextVolumeToastLabel = delta => {
     return `Volume ${Math.round(nextLevel * 100)}%`;
   }
   return volumeToastLabel(delta);
+};
+
+let fineSeekTimer = 0;
+let fineSeekAccumulatedMs = 0;
+let fineSeekDirection = null;
+
+const fineSeek = isForward => {
+  const direction = isForward ? "forward" : "backward";
+  const stepMs = isForward ? 1000 : -1000;
+  if (fineSeekDirection === direction) {
+    fineSeekAccumulatedMs += stepMs;
+  } else {
+    fineSeekDirection = direction;
+    fineSeekAccumulatedMs = stepMs;
+  }
+  const currentPosMs = Math.max(0, Number(state.positionMs) || 0);
+  const durationMs = Math.max(0, Number(state.durationMs) || 0);
+  const targetPosMs = Math.max(
+    0,
+    durationMs > 0 ? Math.min(durationMs, currentPosMs + stepMs) : currentPosMs + stepMs,
+  );
+  state.positionMs = targetPosMs;
+  setProgress(targetPosMs, durationMs);
+  const deltaSec = Math.round(fineSeekAccumulatedMs / 1000);
+  showPlayerToast(`${deltaSec > 0 ? "+" : ""}${deltaSec}s`);
+  send("scrubFinish", targetPosMs);
+  window.clearTimeout(fineSeekTimer);
+  fineSeekTimer = window.setTimeout(() => {
+    fineSeekAccumulatedMs = 0;
+    fineSeekDirection = null;
+  }, 800);
 };
 
 const seekToastLabel = command => {
@@ -852,6 +910,7 @@ const rangePositionMs = () => {
 const modalByName = {
   audio: audioModal,
   subtitles: subtitleModal,
+  speed: speedModal,
   sources: sourceModal,
   episodes: episodesModal,
   submitIntro: submitIntroModal,
@@ -958,6 +1017,44 @@ const appendEmptyTrackState = (container, label) => {
   container.appendChild(empty);
 };
 
+const speedOptions = [
+  { value: 0.25, label: "0.25x" },
+  { value: 0.5, label: "0.5x" },
+  { value: 0.75, label: "0.75x" },
+  { value: 1.0, label: "1x (Normal)" },
+  { value: 1.25, label: "1.25x" },
+  { value: 1.5, label: "1.5x" },
+  { value: 1.75, label: "1.75x" },
+  { value: 2.0, label: "2x" },
+];
+
+const renderSpeedOptionList = () => {
+  if (!speedOptionList) return;
+  speedOptionList.textContent = "";
+  if (speedPanelTitle) {
+    speedPanelTitle.textContent = state.speedPanelTitle || "Playback Speed";
+  }
+  const currentSpeedStr = String(state.playbackSpeedLabel || "1x");
+  const currentSpeedNum = parseFloat(currentSpeedStr.replace("x", "")) || 1.0;
+  speedOptions.forEach(option => {
+    const isSelected = Math.abs(currentSpeedNum - option.value) < 0.05;
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `track-row${isSelected ? " selected" : ""}`;
+    row.addEventListener("click", event => {
+      event.stopPropagation();
+      send("setPlaybackSpeed", option.value);
+      window.setTimeout(closePlayerModal, 120);
+    });
+    const label = document.createElement("span");
+    label.className = "track-label";
+    label.textContent = option.label;
+    row.appendChild(label);
+    row.appendChild(buildCheckIcon());
+    speedOptionList.appendChild(row);
+  });
+};
+
 const renderAudioTrackList = () => {
   audioPanelTitle.textContent = state.audioTracksPanelTitle || "Audio Tracks";
   audioTrackList.textContent = "";
@@ -1055,6 +1152,12 @@ const appendSubtitleLanguageRow = item => {
     pendingSubtitleOptionId = options.some(option => option.id === pendingSubtitleOptionId) ? pendingSubtitleOptionId : "";
     if (item.key === "__off__") send("selectBuiltInSubtitleTrack", -1);
     renderSubtitleModal();
+    if (event.detail === 0 && item.key !== "__off__") {
+      window.requestAnimationFrame(() => {
+        const firstOption = addonSubtitleList.querySelector('.track-row:not([disabled]):not([hidden])');
+        if (firstOption) firstOption.focus();
+      });
+    }
   });
   const label = document.createElement("span");
   label.className = "track-label";
@@ -1814,6 +1917,7 @@ const renderP2pConsentModal = () => {
 const renderActiveModal = () => {
   if (activeModal === "audio") renderAudioTrackList();
   if (activeModal === "subtitles") renderSubtitleModal();
+  if (activeModal === "speed") renderSpeedOptionList();
   if (activeModal === "sources") renderSourceModal();
   if (activeModal === "episodes") renderEpisodesModal();
   if (activeModal === "submitIntro") renderSubmitIntroModal();
@@ -2487,6 +2591,11 @@ window.addEventListener("blur", () => {
 // Ukuran bar bisa berubah pas window di-resize/fullscreen -> re-sync lift.
 window.addEventListener("resize", () => {
   syncSubtitleLift();
+  clearSpeedBoostTimers();
+  if (isHoldSpeedActive || isSpaceBoosting || isSpeedBoosting) {
+    suppressNextRootClick = true;
+    stopSpeedBoost();
+  }
 });
 
 document.querySelectorAll("[data-command]").forEach(button => {
@@ -2511,6 +2620,10 @@ document.querySelectorAll("[data-command]").forEach(button => {
     }
     if (command === "subtitles") {
       openPlayerModal("subtitles");
+      return;
+    }
+    if (command === "speed") {
+      openPlayerModal("speed");
       return;
     }
     if (command === "sources") {
@@ -2786,18 +2899,47 @@ seek.addEventListener("change", () => {
   render();
 });
 
-volumeSlider.addEventListener("input", () => {
+volumeSlider.addEventListener("input", event => {
+  if (event && !event.isTrusted) return;
   noteChromeActivity();
   const percent = Math.max(0, Math.min(maxVolumeLevel * 100, Number(volumeSlider.value) || 0));
   const nextLevel = percent / 100;
   state.volumeLevel = nextLevel;
+  if (nextLevel > 0) {
+    preMuteVolumeLevel = nextLevel;
+  }
   syncVolumeControl();
   send("volumeChange", nextLevel);
 });
 
+let preMuteVolumeLevel = 1.0;
+
+if (volumeButton) {
+  volumeButton.addEventListener("click", event => {
+    event.stopPropagation();
+    noteChromeActivity();
+    if (state.volumeLevel > 0) {
+      preMuteVolumeLevel = state.volumeLevel;
+      state.volumeLevel = 0;
+    } else {
+      state.volumeLevel = preMuteVolumeLevel > 0 ? preMuteVolumeLevel : 1.0;
+    }
+    syncVolumeControl();
+    send("volumeChangeTemporary", state.volumeLevel);
+  });
+}
+
 // Scroll wheel di area video = atur volume (delta dalam persen).
 // Menggunakan volume saat ini, termasuk boosted volume sampai 200%.
 document.addEventListener("wheel", event => {
+  const isProgressTarget = Boolean(event.target.closest("#seek, .time-row, .time-pill, .scrub"));
+  if (isProgressTarget || event.shiftKey) {
+    event.preventDefault();
+    noteChromeActivity();
+    const delta = event.deltaY !== 0 ? Math.sign(event.deltaY) * -1 : Math.sign(event.deltaX);
+    if (delta !== 0) fineSeek(delta > 0);
+    return;
+  }
   if (isChromeInteractionTarget(event.target)) return;
   event.preventDefault();
   const step = volumeScrollStepPercent / 100;
@@ -2850,6 +2992,10 @@ if (timeLabel) {
 window.playerUpdate = update => {
   const durationMs = Math.round((Number(update.duration) || 0) * 1000);
   const positionMs = Math.round((Number(update.position) || 0) * 1000);
+  const reportedVolumeLevel = Number(update.volumeLevel);
+  const volumeLevel = Number.isFinite(reportedVolumeLevel)
+    ? clampVolumeLevel(reportedVolumeLevel)
+    : state.volumeLevel;
   const audioTracks = normalizeTracks(update.audioTracks);
   const subtitleTracks = normalizeTracks(update.subtitleTracks);
   const audioTracksChanged = trackListSignature(audioTracks) !== trackListSignature(state.audioTracks);
@@ -2867,9 +3013,13 @@ window.playerUpdate = update => {
     positionMs,
     isPlaying: pendingIsPlaying === null ? nativeIsPlaying : pendingIsPlaying,
     isLoading: Boolean(update.loading || update.isLoading),
+    volumeLevel,
     audioTracks,
     subtitleTracks,
   };
+  if (typeof volumeLevel === "number" && volumeLevel > 0) {
+    preMuteVolumeLevel = volumeLevel;
+  }
   if (subtitleTracksChanged && activeModal === "subtitles") {
     const selected = selectedSubtitleOption(subtitleSelectionOptions());
     if (selected) {
@@ -2895,11 +3045,20 @@ window.playerControls = nextState => {
 const currentPlaybackState = pendingIsPlaying === null
     ? state.isPlaying
     : pendingIsPlaying;
-  state = { ...state, ...nextState, isPlaying: currentPlaybackState };
+  const currentVolumeLevel = hasReceivedPlayerControls ? state.volumeLevel : undefined;
+  state = {
+    ...state,
+    ...nextState,
+    isPlaying: currentPlaybackState,
+    volumeLevel: currentVolumeLevel ?? nextState.volumeLevel,
+  };
   // Native setting wins over the WebView fallback.
   const nativeStep = Number(nextState.volumeScrollStep);
   if (nativeStep === 1 || nativeStep === 5) {
     volumeScrollStepPercent = nativeStep;
+  }
+  if (typeof state.volumeLevel === "number" && state.volumeLevel > 0) {
+    preMuteVolumeLevel = state.volumeLevel;
   }
   hasReceivedPlayerControls = true;
   const closeToken = Number(state.closeModalsToken) || 0;
@@ -2930,6 +3089,164 @@ const currentPlaybackState = pendingIsPlaying === null
   }
 };
 
+
+const isControlsSurfaceEvent = event => {
+  if (activeModal) return true;
+  if (event.target.closest("button, input, textarea, select, a, .action-pill, .volume-control, .modal-layer, .skip-prompt, .next-episode-card")) {
+    return true;
+  }
+
+  const seekEl = document.getElementById("seek");
+  if (seekEl && event.clientY >= seekEl.getBoundingClientRect().top - 6) {
+    return true;
+  }
+
+  const titleEl = document.getElementById("title");
+  const metaRow = document.querySelector(".meta-row");
+  if (titleEl && metaRow) {
+    const titleRect = titleEl.getBoundingClientRect();
+    const metaRect = metaRow.getBoundingClientRect();
+    const textTop = Math.min(titleRect.top, metaRect.top);
+    const textBottom = Math.max(titleRect.bottom, metaRect.bottom);
+    const textRight = titleRect.left + Math.max(titleEl.scrollWidth, metaRow.scrollWidth) + 16;
+
+    if (
+        event.clientX >= titleRect.left &&
+        event.clientX <= textRight &&
+        event.clientY >= textTop &&
+        event.clientY <= textBottom
+    ) {
+      return true;
+    }
+  }
+
+  const header = document.querySelector(".header");
+  if (header && event.clientY <= header.getBoundingClientRect().bottom + 10) {
+    return true;
+  }
+
+  return false;
+};
+
+let preSpeedBoostRate = null;
+let isSpeedBoosting = false;
+let speedBoostHoldTimer = null;
+let isHoldSpeedActive = false;
+let suppressNextRootClick = false;
+let rootPointerStartX = 0;
+let rootPointerStartY = 0;
+let spaceHoldTimer = null;
+let isSpaceBoosting = false;
+let pausedBeforeSpeedBoosting = false;
+
+const clearSpeedBoostHoldTimer = () => {
+  if (speedBoostHoldTimer) {
+    window.clearTimeout(speedBoostHoldTimer);
+    speedBoostHoldTimer = null;
+  }
+}
+
+const clearSpaceHoldTimer = () => {
+  if (spaceHoldTimer) {
+    window.clearTimeout(spaceHoldTimer);
+    spaceHoldTimer = null;
+  }
+}
+
+const clearSpeedBoostTimers = () => {
+  clearSpeedBoostHoldTimer();
+  clearSpaceHoldTimer();
+}
+
+const preventClickAndStopSpeedBoost = () => {
+  if (isHoldSpeedActive) {
+    suppressNextRootClick = true;
+    isHoldSpeedActive = false;
+    stopSpeedBoost();
+  }
+}
+
+const clearSpaceHoldTimerAndStopSpeedBoost = () => {
+  clearSpaceHoldTimer();
+  if (isSpaceBoosting || isSpeedBoosting) {
+    isSpaceBoosting = false;
+    stopSpeedBoost();
+    return true;
+  }
+  return false;
+}
+
+const startSpeedBoost = () => {
+  if (isSpeedBoosting) return;
+  isSpeedBoosting = true;
+  if (preSpeedBoostRate == null) {
+    const currentSpeedStr = String(state.playbackSpeedLabel || "1x");
+    const currentSpeedNum = parseFloat(currentSpeedStr.replace("x", "")) || 1.0;
+    preSpeedBoostRate = currentSpeedNum === 2.0 ? 1.0 : currentSpeedNum;
+  }
+  if (!state.isPlaying) {
+    pausedBeforeSpeedBoosting = true;
+    requestPlaybackState("setPlaybackStateQuiet", false);
+  }
+  showPlayerToast("2x", { icon: "icon-speed", persistent: true });
+  send("setPlaybackSpeed", 2.0);
+};
+
+const stopSpeedBoost = () => {
+  clearSpeedBoostTimers();
+  if (!isSpeedBoosting) return;
+  isSpeedBoosting = false;
+  isHoldSpeedActive = false;
+  isSpaceBoosting = false;
+  const restoreSpeed = preSpeedBoostRate != null ? preSpeedBoostRate : 1.0;
+  preSpeedBoostRate = null;
+  if (pausedBeforeSpeedBoosting) {
+    pausedBeforeSpeedBoosting = false;
+    requestPlaybackState("setPlaybackStateQuiet", false);
+  }
+  send("setPlaybackSpeed", restoreSpeed);
+  hidePlayerToast();
+};
+
+root.addEventListener("contextmenu", event => {
+  event.preventDefault();
+});
+
+root.addEventListener("pointerdown", event => {
+  if (playbackErrorText() || isControlsSurfaceEvent(event)) return;
+  if (event.button !== 0) return;
+
+  rootPointerStartX = event.clientX;
+  rootPointerStartY = event.clientY;
+  isHoldSpeedActive = false;
+  suppressNextRootClick = false;
+
+  clearSpeedBoostHoldTimer();
+  speedBoostHoldTimer = window.setTimeout(() => {
+    isHoldSpeedActive = true;
+    suppressNextRootClick = true;
+    startSpeedBoost();
+  }, 220);
+});
+
+window.addEventListener("pointermove", event => {
+  if (speedBoostHoldTimer && !isHoldSpeedActive) {
+    const dx = Math.abs(event.clientX - rootPointerStartX);
+    const dy = Math.abs(event.clientY - rootPointerStartY);
+    if (dx > 12 || dy > 12) clearSpeedBoostHoldTimer();
+  }
+});
+
+window.addEventListener("pointerup", () => {
+  clearSpeedBoostHoldTimer();
+  preventClickAndStopSpeedBoost();
+});
+
+window.addEventListener("pointercancel", () => {
+clearSpeedBoostHoldTimer();
+preventClickAndStopSpeedBoost();
+});
+
 root.addEventListener("click", event => {
   if (playbackErrorText()) return;
   if (event.target.closest("button,input")) return;
@@ -2951,14 +3268,32 @@ root.addEventListener("dblclick", event => {
   togglePlayerFullscreen();
 });
 
+document.addEventListener("keyup", event => {
+  if (event.key === "Alt" || event.key === "Control" || event.key === "Meta" || event.metaKey || event.ctrlKey || event.altKey) {
+    clearSpaceHoldTimerAndStopSpeedBoost();
+    return;
+  }
+  if (event.code === "Space") {
+    if (clearSpaceHoldTimerAndStopSpeedBoost()) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (activeModal || isTextEntryTarget(event.target)) return;
+    event.preventDefault();
+    focusShortcutRoot();
+    noteChromeActivity();
+    requestPlaybackState("setPlaybackStateQuiet", false);
+  }
+});
+
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && activeModal) {
+    clearSpaceHoldTimerAndStopSpeedBoost();
     event.preventDefault();
     closePlayerModal(true);
     focusShortcutRoot();
     return;
   }
   if (event.key === "Escape") {
+    clearSpaceHoldTimerAndStopSpeedBoost();
     event.preventDefault();
     if (state.isFullscreen) {
       togglePlayerFullscreen();
@@ -2969,13 +3304,321 @@ document.addEventListener("keydown", event => {
   }
   if (playbackErrorText()) return;
   const isMacFullscreenShortcut = event.code === "KeyF" && event.metaKey && event.ctrlKey && !event.altKey;
-  if (event.code === "F11" || isMacFullscreenShortcut) {
+  const isPlainKeyF = event.code === "KeyF" && !event.metaKey && !event.ctrlKey && !event.altKey;
+  if (event.code === "F11" || isMacFullscreenShortcut || (isPlainKeyF && !isTextEntryTarget(event.target))) {
+    clearSpaceHoldTimerAndStopSpeedBoost();
     event.preventDefault();
     focusShortcutRoot();
     togglePlayerFullscreen();
     return;
   }
-  if (activeModal || isTextEntryTarget(event.target)) {
+  if (event.metaKey || event.ctrlKey || event.altKey || event.key === "Alt" || event.key === "Control" || event.key === "Meta") {
+    clearSpaceHoldTimerAndStopSpeedBoost();
+    return;
+  }
+  if (isTextEntryTarget(event.target)) {
+    return;
+  }
+
+  if ((activeModal === "episodes" || activeModal === "sources") && (event.code === "ArrowLeft" || event.code === "ArrowRight")) {
+    const chips = Array.from(document.querySelectorAll('.filter-chip:not([hidden])')).filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+    if (chips.length > 0) {
+      let selectedIndex = chips.findIndex(el => el.classList.contains('selected'));
+      if (selectedIndex === -1) selectedIndex = 0;
+      let nextIndex = selectedIndex;
+      if (event.code === "ArrowRight") {
+        nextIndex = selectedIndex < chips.length - 1 ? selectedIndex + 1 : 0;
+      } else {
+        nextIndex = selectedIndex > 0 ? selectedIndex - 1 : chips.length - 1;
+      }
+      if (nextIndex !== selectedIndex) {
+        event.preventDefault();
+        chips[nextIndex].click();
+      }
+      return;
+    }
+  }
+
+  if (activeModal === "audio" && (event.code === "ArrowUp" || event.code === "ArrowDown")) {
+    event.preventDefault();
+    if (state.audioTracks && state.audioTracks.length > 0) {
+      const currentIndex = state.audioTracks.findIndex(t => t.selected);
+      let nextIndex = currentIndex;
+      if (event.code === "ArrowUp") {
+        nextIndex = currentIndex > 0 ? currentIndex - 1 : state.audioTracks.length - 1;
+      } else {
+        nextIndex = currentIndex >= 0 && currentIndex < state.audioTracks.length - 1 ? currentIndex + 1 : 0;
+      }
+      if (nextIndex !== currentIndex && nextIndex >= 0) {
+        send("selectAudioTrack", trackIdValue(state.audioTracks[nextIndex]));
+      }
+    }
+    return;
+  }
+
+  if (activeModal === "speed" && (event.code === "ArrowUp" || event.code === "ArrowDown")) {
+    event.preventDefault();
+    const currentSpeedStr = String(state.playbackSpeedLabel || "1x");
+    let currentIndex = pendingSpeedIndex !== null ? pendingSpeedIndex : speedOptions.findIndex(o => currentSpeedStr.startsWith(o.label.split(" ")[0]));
+    if (currentIndex >= 0) {
+      if (event.code === "ArrowUp") {
+        currentIndex = currentIndex > 0 ? currentIndex - 1 : speedOptions.length - 1;
+      } else {
+        currentIndex = currentIndex < speedOptions.length - 1 ? currentIndex + 1 : 0;
+      }
+      pendingSpeedIndex = currentIndex;
+      window.clearTimeout(pendingSpeedTimer);
+      pendingSpeedTimer = window.setTimeout(() => pendingSpeedIndex = null, 1000);
+      queueSettingToast("speed");
+      send("setPlaybackSpeed", speedOptions[currentIndex].value);
+    }
+    return;
+  }
+
+  if (activeModal && event.code.startsWith("Arrow") && (!document.activeElement || document.activeElement.tagName === "BODY" || document.activeElement === root)) {
+    let items;
+    if (activeModal === "subtitles") {
+      items = Array.from(document.querySelectorAll('.subtitle-language-row:not([disabled]):not([hidden])'))
+        .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+    } else {
+      items = Array.from(document.querySelectorAll('.track-row:not([disabled]):not([hidden])'))
+        .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+    }
+    if (items.length) {
+      let selectedIndex = items.findIndex(el => el.classList.contains('selected'));
+      if (selectedIndex === -1) selectedIndex = 0;
+      let nextIndex = selectedIndex;
+      if (event.code === 'ArrowDown' || event.code === 'ArrowRight') {
+        nextIndex = selectedIndex < items.length - 1 ? selectedIndex + 1 : 0;
+      } else if (event.code === 'ArrowUp' || event.code === 'ArrowLeft') {
+        nextIndex = selectedIndex > 0 ? selectedIndex - 1 : items.length - 1;
+      }
+      event.preventDefault();
+      items[nextIndex].focus();
+      return;
+    }
+  }
+
+  if (activeModal && event.code.startsWith("Arrow") && document.activeElement && document.activeElement.tagName !== "BODY" && document.activeElement !== root) {
+    const modalEl = modalByName[activeModal];
+    if (!modalEl) return;
+    const focusable = Array.from(modalEl.querySelectorAll('button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden]), [tabindex]:not([tabindex="-1"])'))
+      .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+    if (focusable.length) {
+      const currentIndex = focusable.indexOf(document.activeElement);
+      if (currentIndex >= 0) {
+        if (event.code === 'ArrowRight' || event.code === 'ArrowDown') {
+          event.preventDefault();
+          const next = (currentIndex + 1) % focusable.length;
+          focusable[next].focus();
+          return;
+        }
+        if (event.code === 'ArrowLeft' || event.code === 'ArrowUp') {
+          event.preventDefault();
+          const next = currentIndex > 0 ? currentIndex - 1 : focusable.length - 1;
+          focusable[next].focus();
+          return;
+        }
+      }
+    }
+  }
+
+  if (event.code === "Backquote") {
+    event.preventDefault();
+    if (activeModal === "speed") closePlayerModal(true);
+    else openPlayerModal("speed");
+    return;
+  }
+
+  if (event.code === "KeyA") {
+    event.preventDefault();
+    if (activeModal === "audio") closePlayerModal(true);
+    else openPlayerModal("audio");
+    return;
+  }
+  if (event.code === "KeyS") {
+    event.preventDefault();
+    if (activeModal === "subtitles") closePlayerModal(true);
+    else openPlayerModal("subtitles");
+    return;
+  }
+  if (event.code === "KeyE") {
+    event.preventDefault();
+    if (activeModal === "episodes") {
+      closePlayerModal(true);
+    } else {
+      episodeStreamFilterId = "";
+      openPlayerModal("episodes");
+      send("episodes", 0);
+    }
+    return;
+  }
+  if (event.code === "KeyQ") {
+    event.preventDefault();
+    if (activeModal === "sources") {
+      closePlayerModal(true);
+    } else {
+      sourceFilterId = "";
+      openPlayerModal("sources");
+      send("sources", 0);
+    }
+    return;
+  }
+
+  if (activeModal) {
+    return;
+  }
+
+  if (event.code === "Enter" && state.skipPromptVisible) {
+    const activeEl = document.activeElement;
+    if (!activeEl || activeEl.tagName === "BODY" || activeEl === root) {
+      event.preventDefault();
+      send("skipInterval", 0);
+      return;
+    }
+  }
+  if (event.shiftKey && event.code === "KeyN") {
+    event.preventDefault();
+    send("playNextEpisode", 0);
+    return;
+  }
+  if (event.code === "KeyB") {
+    event.preventDefault();
+    if (state.audioTracks && state.audioTracks.length > 0) {
+      const currentIndex = state.audioTracks.findIndex(t => t.selected);
+      const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % state.audioTracks.length : 0;
+      send("selectAudioTrack", trackIdValue(state.audioTracks[nextIndex]));
+    }
+    return;
+  }
+  if (event.code === "KeyV") {
+    event.preventDefault();
+    const isOff = !normalizeTracks(state.subtitleTracks).some(t => t.selected);
+    if (isOff) {
+      if (window.lastActiveSubtitle) {
+        if (window.lastActiveSubtitle.kind === "builtIn") send("selectBuiltInSubtitleTrack", window.lastActiveSubtitle.index);
+        else send("selectAddonSubtitle", window.lastActiveSubtitle.index);
+      } else {
+        const options = subtitleSelectionOptions();
+        if (options.length > 0) {
+          if (options[0].kind === "builtIn") send("selectBuiltInSubtitleTrack", options[0].index);
+          else send("selectAddonSubtitle", options[0].index);
+        } else if (state.subtitleTracks && state.subtitleTracks.length > 0) {
+          send("selectBuiltInSubtitleTrack", state.subtitleTracks[0].index);
+        }
+      }
+    } else {
+      const activeOption = selectedSubtitleOption(subtitleSelectionOptions());
+      if (activeOption) {
+        window.lastActiveSubtitle = activeOption;
+      } else {
+        const activeTrack = normalizeTracks(state.subtitleTracks).find(t => t.selected);
+        if (activeTrack) window.lastActiveSubtitle = { kind: "builtIn", index: activeTrack.index };
+      }
+      send("selectBuiltInSubtitleTrack", -1);
+    }
+    return;
+  }
+  if (event.code === "KeyG") {
+    event.preventDefault();
+    send("subtitleDelayDelta", -100);
+    return;
+  }
+  if (event.code === "KeyH") {
+    event.preventDefault();
+    send("subtitleDelayDelta", 100);
+    return;
+  }
+  if (event.code === "KeyM") {
+    event.preventDefault();
+    if (state.volumeLevel > 0) {
+      preMuteVolumeLevel = state.volumeLevel;
+      state.volumeLevel = 0;
+    } else {
+      state.volumeLevel = preMuteVolumeLevel > 0 ? preMuteVolumeLevel : 1.0;
+    }
+    syncVolumeControl();
+    send("volumeChangeTemporary", state.volumeLevel);
+    showPlayerToast(volumeToastLabel(0), { icon: state.volumeLevel > 0 ? "icon-volume" : "icon-volume-muted" });
+    return;
+  }
+  if (event.code === "KeyO") {
+    event.preventDefault();
+    const style = state.subtitleStyle || {};
+    const currentOpacity = Math.round((parseArgb(style.textColor).alpha / 255) * 100);
+    if (currentOpacity > 50) {
+      window.lastSubtitleOpacity = currentOpacity;
+      send("subtitleTextOpacity", 50);
+    } else {
+      send("subtitleTextOpacity", window.lastSubtitleOpacity && window.lastSubtitleOpacity > 50 ? window.lastSubtitleOpacity : 100);
+    }
+    return;
+  }
+  if (event.code === "KeyP") {
+    event.preventDefault();
+    const style = state.subtitleStyle || {};
+    const currentOpacity = Math.round((parseArgb(style.textColor).alpha / 255) * 100);
+    send("subtitleTextOpacity", Math.min(100, currentOpacity + 10));
+    return;
+  }
+  if (event.code === "KeyI") {
+    event.preventDefault();
+    const style = state.subtitleStyle || {};
+    const currentOpacity = Math.round((parseArgb(style.textColor).alpha / 255) * 100);
+    send("subtitleTextOpacity", Math.max(0, currentOpacity - 10));
+    return;
+  }
+  if (event.shiftKey && event.code === "Comma") {
+    event.preventDefault();
+    const currentSpeedStr = String(state.playbackSpeedLabel || "1x");
+    let currentIndex = pendingSpeedIndex !== null ? pendingSpeedIndex : speedOptions.findIndex(o => currentSpeedStr.startsWith(o.label.split(" ")[0]));
+    if (currentIndex > 0) {
+      pendingSpeedIndex = currentIndex - 1;
+      window.clearTimeout(pendingSpeedTimer);
+      pendingSpeedTimer = window.setTimeout(() => pendingSpeedIndex = null, 1000);
+      queueSettingToast("speed");
+      send("setPlaybackSpeed", speedOptions[pendingSpeedIndex].value);
+    }
+    return;
+  }
+  if (event.shiftKey && event.code === "Period") {
+    event.preventDefault();
+    const currentSpeedStr = String(state.playbackSpeedLabel || "1x");
+    let currentIndex = pendingSpeedIndex !== null ? pendingSpeedIndex : speedOptions.findIndex(o => currentSpeedStr.startsWith(o.label.split(" ")[0]));
+    if (currentIndex >= 0 && currentIndex < speedOptions.length - 1) {
+      pendingSpeedIndex = currentIndex + 1;
+      window.clearTimeout(pendingSpeedTimer);
+      pendingSpeedTimer = window.setTimeout(() => pendingSpeedIndex = null, 1000);
+      queueSettingToast("speed");
+      send("setPlaybackSpeed", speedOptions[pendingSpeedIndex].value);
+    }
+    return;
+  }
+  if (event.code === "Slash") {
+    event.preventDefault();
+    pendingSpeedIndex = speedOptions.findIndex(o => o.value === 1.0);
+    window.clearTimeout(pendingSpeedTimer);
+    pendingSpeedTimer = window.setTimeout(() => pendingSpeedIndex = null, 1000);
+    queueSettingToast("speed");
+    send("setPlaybackSpeed", 1.0);
+    return;
+  }
+
+  if (event.code === "Space") {
+    event.preventDefault();
+    if (event.repeat) {
+      if (!isSpeedBoosting) {
+        isSpaceBoosting = true;
+        startSpeedBoost();
+      }
+      return;
+    }
+    clearSpaceHoldTimer();
+    isSpaceBoosting = false;
+    spaceHoldTimer = window.setTimeout(() => {
+      isSpaceBoosting = true;
+      startSpeedBoost();
+    }, 220);
     return;
   }
   const command = shortcutCommandForEvent(event);
