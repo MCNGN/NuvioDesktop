@@ -174,6 +174,7 @@ let state = {
   episodeText: "",
   streamTitle: "",
   providerName: "",
+  pauseOverlayEnabled: false,
   pauseOverlayWatchingLabel: "You're watching",
   pauseOverlayLogo: "",
   pauseOverlayEpisodeInfo: "",
@@ -2314,7 +2315,7 @@ const renderChrome = () => {
   syncSubtitleLift();
   syncHiddenCursor();
   const showOpening = renderOpeningOverlay(showError);
-  renderPauseMetadataOverlay(showOpening || showError);
+  if (state.pauseOverlayEnabled || showError) renderPauseMetadataOverlay(showOpening || showError);
   syncParentalGuide(showOpening || showError);
 
   title.textContent = state.title || "";

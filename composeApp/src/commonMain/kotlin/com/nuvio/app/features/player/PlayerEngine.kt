@@ -79,6 +79,7 @@ data class PlayerControlsState(
     val episodeText: String = "",
     val streamTitle: String = "",
     val providerName: String = "",
+    val pauseOverlayEnabled: Boolean = true,
     val pauseOverlayWatchingLabel: String = "You're watching",
     val pauseOverlayLogo: String? = null,
     val pauseOverlayEpisodeInfo: String = "",
