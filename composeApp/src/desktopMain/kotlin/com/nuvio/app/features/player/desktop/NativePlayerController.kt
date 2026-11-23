@@ -5,6 +5,7 @@ import co.touchlab.kermit.Logger
 import com.nuvio.app.features.player.PlayerControlAddonSubtitleItem
 import com.nuvio.app.features.player.PlayerControlEpisodeItem
 import com.nuvio.app.features.player.PlayerControlFilterItem
+import com.nuvio.app.features.player.PlayerControlPartyState
 import com.nuvio.app.features.player.PlayerControlSeasonItem
 import com.nuvio.app.features.player.PlayerControlSourceItem
 import com.nuvio.app.features.player.PlayerControlSubtitleCueItem
@@ -14,12 +15,18 @@ import com.nuvio.app.features.player.AudioTrack
 import com.nuvio.app.features.player.ParentalWarning
 import com.nuvio.app.features.player.PlayerControlsAction
 import com.nuvio.app.features.player.PlayerControlsState
+import com.nuvio.app.features.player.PlayerChapter
+import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.player.PlayerEngineController
+import com.nuvio.app.features.player.PlayerMediaInfo
+import com.nuvio.app.features.player.mpvMediaInfo
 import com.nuvio.app.features.player.PlayerPlaybackSnapshot
 import com.nuvio.app.features.player.PlayerResizeMode
 import com.nuvio.app.features.player.SUBTITLE_DELAY_MAX_MS
+import com.nuvio.app.features.player.findPreferredAudioTrackIndex
 import com.nuvio.app.features.player.SUBTITLE_DELAY_MIN_MS
 import com.nuvio.app.features.player.SubtitleColorSwatches
+import com.nuvio.app.features.player.SubtitleFontResolver
 import com.nuvio.app.features.player.SubtitleOutlineColorSwatches
 import com.nuvio.app.features.player.SubtitleStyleState
 import com.nuvio.app.features.player.SubtitleTrack
@@ -28,14 +35,39 @@ import com.nuvio.app.features.player.toStorageHexString
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
-import javax.swing.SwingUtilities
 import java.awt.Component
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
+import java.util.concurrent.CountDownLatch
+import javax.swing.SwingUtilities
 import kotlin.concurrent.Volatile
+
+internal typealias NativePlayerCreate = (
+    Long,
+    String,
+    Array<String>,
+    Boolean,
+    Long,
+    String,
+    Int,
+    Boolean,
+    Boolean,
+    NativePlayerEventSink,
+) -> Long
 
 internal class NativePlayerController(
     private val host: NativePlayerHost,
+    private val nativeCreate: NativePlayerCreate = { hostViewPtr, source, headers, playWhenReady, positionMs, controlsUrl, decoder, rtx, rtxHdr, sink ->
+        NativePlayerBridge.ensureLoaded()
+        NativePlayerBridge.create(hostViewPtr, source, headers, playWhenReady, positionMs, controlsUrl, decoder, rtx, rtxHdr, sink)
+    },
+    private val nativeDispose: (Long) -> Unit = NativePlayerBridge::dispose,
+    private val nativeSeekTo: (Long, Long) -> Unit = NativePlayerBridge::seekTo,
+    private val isHostDisplayable: () -> Boolean = { host.isDisplayable },
+    private val resolveHostView: () -> Long = { AwtNativeViewResolver.resolveNativeViewPointer(host) },
+    private val createWaitTimeoutMs: Long = 5_000L,
+    private val releaseTimeoutMs: Long = 10_000L,
+    private val onCreateWaitCompleted: () -> Unit = {},
 ) : PlayerEngineController {
     private companion object {
         val json = Json { ignoreUnknownKeys = true }
@@ -46,7 +78,20 @@ internal class NativePlayerController(
 
         @Volatile
         var rememberedVolumeLevel: Float = DesktopPlayerVolumeStorage.loadVolumeLevel() ?: 1f
+
+        @Volatile
+        var rememberedResizeMode: PlayerResizeMode = PlayerResizeMode.Fit
     }
+
+    private data class ReleaseCallback(
+        val onReleased: () -> Unit,
+        val onFailed: (String) -> Unit,
+    )
+
+    private val lifecycleLock = Any()
+    private var currentNowPlayingTitle: String = ""
+    private var currentNowPlayingSubtitle: String = ""
+    private var currentArtworkUrl: String = ""
 
     @Volatile
     private var handle: Long = 0L
@@ -54,8 +99,21 @@ internal class NativePlayerController(
     /** Native teardown of the previous player, if one is still running. */
     @Volatile
     private var disposeInFlight: Thread? = null
+
+    @Volatile
     private var pendingSource: PendingSource? = null
+    @Volatile
+    private var releaseRequested: Boolean = false
+    val isReleasing: Boolean
+        get() = releaseRequested
+    private val createsInFlight = mutableSetOf<Thread>()
+    private var createWaitInFlight: Thread? = null
+    private val releaseCallbacks = mutableListOf<ReleaseCallback>()
+    private var releaseInFlight: Thread? = null
+    private var releaseTimedOut: Boolean = false
+    private var terminalReleaseFailure: String? = null
     private var controlsState = PlayerControlsState()
+    private var pictureInPictureActive = false
     @Volatile
     private var currentVolumeLevel = rememberedVolumeLevel.coerceDesktopPlayerVolumeLevel()
     private var pendingSubtitleDelayMs: Int? = null
@@ -79,6 +137,7 @@ internal class NativePlayerController(
         initialPositionMs: Long,
         decoderPriority: Int,
         nvidiaRtxSuperResolutionEnabled: Boolean,
+        nvidiaRtxHdrEnabled: Boolean = false,
         onError: (String?) -> Unit,
     ) {
         val pending = PendingSource(
@@ -88,15 +147,33 @@ internal class NativePlayerController(
             initialPositionMs = initialPositionMs.coerceAtLeast(0L),
             decoderPriority = decoderPriority,
             nvidiaRtxSuperResolutionEnabled = nvidiaRtxSuperResolutionEnabled,
+            nvidiaRtxHdrEnabled = nvidiaRtxHdrEnabled,
             onError = onError,
         )
-        pendingSource = pending
+        var terminalFailure: String? = null
+        val accepted = synchronized(lifecycleLock) {
+            when {
+                releaseRequested -> false
+                terminalReleaseFailure != null -> {
+                    terminalFailure = terminalReleaseFailure
+                    false
+                }
+                else -> {
+                    pendingSource = pending
+                    true
+                }
+            }
+        }
+        if (!accepted) {
+            terminalFailure?.let { message -> SwingUtilities.invokeLater { pending.onError(message) } }
+            return
+        }
         log.d {
             "attach requested source=${sourceUrl.toPlaybackLogKey()} headers=${sourceHeaders.size} " +
                 "playWhenReady=$playWhenReady initialPositionMs=$initialPositionMs decoderPriority=$decoderPriority"
         }
         host.onPeerReady = { attachPending() }
-        if (host.isDisplayable) {
+        if (isHostDisplayable()) {
             attachPending()
         }
     }
@@ -104,9 +181,19 @@ internal class NativePlayerController(
     private fun attachPending() {
         val pending = pendingSource ?: return
         SwingUtilities.invokeLater {
-            if (!host.isDisplayable) {
+            val terminalFailure = synchronized(lifecycleLock) { terminalReleaseFailure }
+            if (terminalFailure != null) {
+                if (!releaseRequested && pendingSource === pending) pending.onError(terminalFailure)
                 return@invokeLater
             }
+            if (
+                releaseRequested ||
+                pendingSource !== pending ||
+                !isHostDisplayable()
+            ) {
+                return@invokeLater
+            }
+            if (deferAttachUntilCreatesComplete()) return@invokeLater
             disposePlayerHandle()
             val teardown = disposeInFlight
             if (teardown == null || !teardown.isAlive) {
@@ -119,9 +206,22 @@ internal class NativePlayerController(
             // off the EDT, because the teardown itself needs the EDT to keep pumping messages.
             Thread({
                 runCatching { teardown.join(TEARDOWN_WAIT_MS) }
+                val teardownCompleted = !teardown.isAlive
                 SwingUtilities.invokeLater {
-                    if (host.isDisplayable && pendingSource === pending) {
-                        createPlayer(pending)
+                    val terminalFailure = synchronized(lifecycleLock) { terminalReleaseFailure }
+                    if (terminalFailure != null) {
+                        if (!releaseRequested && pendingSource === pending) pending.onError(terminalFailure)
+                        return@invokeLater
+                    }
+                    if (!releaseRequested && isHostDisplayable() && pendingSource === pending) {
+                        if (teardownCompleted) {
+                            createPlayer(pending)
+                        } else {
+                            log.w { "attach aborted because previous native teardown exceeded ${TEARDOWN_WAIT_MS}ms" }
+                            if (!releaseRequested && pendingSource === pending) {
+                                pending.onError("Previous player is still shutting down. Please try again.")
+                            }
+                        }
                     }
                 }
             }, "nuvio-player-attach").apply {
@@ -131,12 +231,69 @@ internal class NativePlayerController(
         }
     }
 
+    private fun deferAttachUntilCreatesComplete(): Boolean = synchronized(lifecycleLock) {
+        createsInFlight.removeAll { worker -> !worker.isAlive }
+        if (createsInFlight.isEmpty()) return@synchronized false
+        if (createWaitInFlight?.isAlive == true) return@synchronized true
+        val workers = createsInFlight.toList()
+        val pendingAtWaitStart = pendingSource
+        val worker = Thread({
+            val deadlineNanos = System.nanoTime() + createWaitTimeoutMs * 1_000_000L
+            var interrupted = false
+            workers.forEach { create ->
+                while (create.isAlive) {
+                    val remainingNanos = deadlineNanos - System.nanoTime()
+                    if (remainingNanos <= 0L) break
+                    try {
+                        val millis = (remainingNanos / 1_000_000L).coerceAtLeast(1L)
+                        create.join(millis)
+                    } catch (_: InterruptedException) {
+                        interrupted = true
+                    }
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt()
+            synchronized(lifecycleLock) {
+                if (createWaitInFlight === Thread.currentThread()) createWaitInFlight = null
+            }
+            runCatching { onCreateWaitCompleted() }
+            SwingUtilities.invokeLater {
+                if (releaseRequested || !runCatching { isHostDisplayable() }.getOrDefault(false)) {
+                    return@invokeLater
+                }
+                val (current, terminalFailure) = synchronized(lifecycleLock) {
+                    createsInFlight.removeAll { create -> !create.isAlive }
+                    pendingSource to terminalReleaseFailure
+                }
+                if (terminalFailure != null) {
+                    current?.onError(terminalFailure)
+                    return@invokeLater
+                }
+                val capturedCreatesRemain = workers.any { create -> create.isAlive }
+                when {
+                    current == null -> Unit
+                    !capturedCreatesRemain -> attachPending()
+                    current !== pendingAtWaitStart -> attachPending()
+                    else -> current.onError("Previous player is still starting. Please try again.")
+                }
+            }
+        }, "nuvio-player-create-wait").apply { isDaemon = true }
+        createWaitInFlight = worker
+        worker.start()
+        true
+    }
+
     private fun createPlayer(pending: PendingSource) {
+        val terminalFailure = synchronized(lifecycleLock) { terminalReleaseFailure }
+        if (terminalFailure != null) {
+            if (!releaseRequested && pendingSource === pending) pending.onError(terminalFailure)
+            return
+        }
         // Resolving the AWT peer must happen on the EDT; everything after it must not.
-        val hostViewPtr = runCatching { AwtNativeViewResolver.resolveNativeViewPointer(host) }
+        val hostViewPtr = runCatching { resolveHostView() }
             .getOrElse { error ->
                 log.w(error) { "attach failed to resolve host source=${pending.sourceUrl.toPlaybackLogKey()}" }
-                pending.onError(error.message)
+                if (!releaseRequested && pendingSource === pending) pending.onError(error.message)
                 return
             }
         val resolvedSource = if (pending.sourceUrl.startsWith("file:", ignoreCase = true)) {
@@ -153,43 +310,95 @@ internal class NativePlayerController(
         // messages. Creating on the EDT is therefore the same circular wait that the teardown had:
         // the app stops responding and Windows closes it as "stopped interacting" (Hang 1002).
         // Create off the EDT and come back to it for the parts that touch Swing state.
-        Thread({
-            runCatching {
-                NativePlayerBridge.create(
-                    hostViewPtr = hostViewPtr,
-                    sourceUrl = resolvedSource,
-                    headerLines = pending.headerLines.toTypedArray(),
-                    playWhenReady = pending.playWhenReady,
-                    initialPositionMs = pending.initialPositionMs,
-                    controlsPageUrl = NativePlayerBridge.controlsPageUrl,
-                    decoderPriority = pending.decoderPriority,
-                    nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
-                    eventSink = eventSink,
-                ).also { if (it == 0L) error("Native player did not return a handle.") }
-            }.onSuccess { created ->
-                SwingUtilities.invokeLater {
-                    if (pendingSource !== pending || !host.isDisplayable) {
-                        // Superseded while we were initialising; drop it rather than leak it.
-                        Thread({ runCatching { NativePlayerBridge.dispose(created) } }, "nuvio-player-dispose")
-                            .apply { isDaemon = true }.start()
-                        return@invokeLater
+        val createWorker = Thread({
+            try {
+                runCatching {
+                    nativeCreate(
+                        hostViewPtr,
+                        resolvedSource,
+                        pending.headerLines.toTypedArray(),
+                        pending.playWhenReady,
+                        pending.initialPositionMs,
+                        NativePlayerBridge.controlsPageUrl,
+                        pending.decoderPriority,
+                        pending.nvidiaRtxSuperResolutionEnabled,
+                        pending.nvidiaRtxHdrEnabled,
+                        eventSink,
+                    ).also { if (it == 0L) error("Native player did not return a handle.") }
+                }.onSuccess { created ->
+                    val accepted = synchronized(lifecycleLock) {
+                        if (!releaseRequested && terminalReleaseFailure == null && pendingSource === pending) {
+                            handle = created
+                            true
+                        } else {
+                            false
+                        }
                     }
-                    handle = created
-                    log.d {
-                        "attach created handle=$created source=${resolvedSource.toPlaybackLogKey()} " +
-                            "initialPositionMs=${pending.initialPositionMs}"
+                    if (!accepted) {
+                        runCatching { nativeDispose(created) }
+                            .onFailure { error -> recordTerminalDisposeFailure(error, "superseded create", created) }
+                        return@onSuccess
                     }
-                    applyRememberedVolume()
-                    updateControls(controlsState)
-                    applyPendingSubtitleSettings()
+                    SwingUtilities.invokeLater {
+                        val shouldConfigure = synchronized(lifecycleLock) {
+                            when {
+                                handle != created -> false
+                                pendingSource !== pending || !isHostDisplayable() -> {
+                                    handle = 0L
+                                    lastSentControlsStructureKey = null
+                                    startTrackedDisposeLocked(created)
+                                    false
+                                }
+                                else -> true
+                            }
+                        }
+                        if (!shouldConfigure) return@invokeLater
+                        log.d {
+                            "attach created handle=$created source=${resolvedSource.toPlaybackLogKey()} " +
+                                "initialPositionMs=${pending.initialPositionMs}"
+                        }
+                        applyRememberedVolume()
+                        updateControls(controlsState)
+                        setResizeMode(rememberedResizeMode)
+                        if (currentNowPlayingTitle.isNotEmpty() || currentArtworkUrl.isNotEmpty()) {
+                            setNowPlayingMetadata(currentNowPlayingTitle, currentNowPlayingSubtitle, currentArtworkUrl)
+                        }
+                        applyPendingSubtitleSettings()
+                    }
+                }.onFailure { error ->
+                    log.w(error) { "attach failed source=${pending.sourceUrl.toPlaybackLogKey()}" }
+                    SwingUtilities.invokeLater {
+                        if (!releaseRequested && pendingSource === pending) pending.onError(error.message)
+                    }
                 }
-            }.onFailure { error ->
-                log.w(error) { "attach failed source=${pending.sourceUrl.toPlaybackLogKey()}" }
-                SwingUtilities.invokeLater { pending.onError(error.message) }
+            } finally {
+                synchronized(lifecycleLock) {
+                    createsInFlight.remove(Thread.currentThread())
+                }
             }
-        }, "nuvio-player-create").apply {
-            isDaemon = true
-            start()
+        }, "nuvio-player-create").apply { isDaemon = true }
+        var admissionFailure: String? = null
+        val admitted = synchronized(lifecycleLock) {
+            when {
+                releaseRequested || pendingSource !== pending -> false
+                terminalReleaseFailure != null -> {
+                    admissionFailure = terminalReleaseFailure
+                    false
+                }
+                else -> {
+                    createsInFlight += createWorker
+                    createWorker.start()
+                    true
+                }
+            }
+        }
+        if (!admitted) {
+            admissionFailure?.let { message ->
+                SwingUtilities.invokeLater {
+                    if (!releaseRequested && pendingSource === pending) pending.onError(message)
+                }
+            }
+            return
         }
     }
 
@@ -209,6 +418,10 @@ internal class NativePlayerController(
         }
     }
 
+    // The embedded controls WebView can lose keyboard focus when the desktop
+    // window is reactivated (for example after alt-tab). Re-apply native focus
+    // whenever the host window gains focus. Returns the uninstaller; null until
+    // the host is inside a window (the ancestor does not exist before first paint).
     fun installWindowFocusForwarding(): (() -> Unit)? {
         val window = SwingUtilities.getWindowAncestor(host) ?: return null
         val listener = object : WindowAdapter() {
@@ -251,7 +464,15 @@ internal class NativePlayerController(
                 "speed=${stateWithVolume.playbackSpeedLabel} audioLabel=${stateWithVolume.audioLabel} " +
                 "subsLabel=${stateWithVolume.subtitlesLabel} fullscreen=$isFullscreen"
         }
-        NativePlayerBridge.updateControls(current, stateWithVolume.toControlsJson(isFullscreen))
+        NativePlayerBridge.updateControls(current, stateWithVolume.toControlsJson(isFullscreen, ::refreshControlsForImage))
+    }
+
+    private fun refreshControlsForImage() {
+        SwingUtilities.invokeLater {
+            if (releaseRequested) return@invokeLater
+            lastSentControlsStructureKey = null
+            updateControls(controlsState)
+        }
     }
 
     fun onDesktopFullscreenChanged() {
@@ -269,16 +490,54 @@ internal class NativePlayerController(
         return NativePlayerBridge.reparentSurface(current, pointer)
     }
 
-    private fun requestKeyboardFocus() {
+    fun layoutNativeSubviews() {
+        val current = handle.takeIf { it != 0L } ?: return
+        NativePlayerBridge.layoutNativeSubviews(current)
+    }
+
+    fun requestKeyboardFocus() {
         SwingUtilities.invokeLater {
-            if (!host.isDisplayable) return@invokeLater
-            host.requestFocusInWindow()
             val current = handle.takeIf { it != 0L } ?: return@invokeLater
+            if (DesktopPlayerPictureInPicture.isEnabled) {
+                DesktopPlayerPictureInPicture.pipWindow?.videoHolderPanel?.requestFocusInWindow()
+                NativePlayerBridge.requestFocus(current)
+                return@invokeLater
+            }
+            if (!isHostDisplayable()) return@invokeLater
+            host.requestFocusInWindow()
             NativePlayerBridge.requestFocus(current)
         }
     }
 
+    fun setNowPlayingMetadata(title: String?, subtitle: String?, artworkUrl: String?) {
+        if (DesktopHostOs.current != DesktopHostOs.MACOS) return
+        currentNowPlayingTitle = title.orEmpty()
+        currentNowPlayingSubtitle = subtitle.orEmpty()
+        currentArtworkUrl = artworkUrl.orEmpty()
+        handle.takeIf { it != 0L }?.let { current ->
+            NativePlayerBridge.setNowPlayingMetadata(
+                current,
+                currentNowPlayingTitle,
+                currentNowPlayingSubtitle,
+                currentArtworkUrl,
+            )
+        }
+    }
+
+    @Synchronized
     fun setResizeMode(mode: PlayerResizeMode) {
+        rememberedResizeMode = mode
+        applyResizeMode()
+    }
+
+    @Synchronized
+    fun setPictureInPictureActive(active: Boolean) {
+        pictureInPictureActive = active
+        applyResizeMode()
+    }
+
+    private fun applyResizeMode() {
+        val mode = desktopEffectiveResizeMode(rememberedResizeMode, pictureInPictureActive)
         handle.takeIf { it != 0L }?.let { current ->
             NativePlayerBridge.setResizeMode(
                 handle = current,
@@ -313,6 +572,8 @@ internal class NativePlayerController(
                 }
             }
             "toggleFullscreen" -> {
+                if (onEvent(type, value)) 
+                    return
                 if (DesktopPlayerPictureInPicture.isEnabled) {
                     DesktopPlayerPictureInPicture.toggle()
                 } else {
@@ -323,8 +584,10 @@ internal class NativePlayerController(
             "dragWindow" -> NativePlayerBridge.beginWindowDrag(handle)
             "volumeChange" -> setFallbackVolume(value.toFloat())
             "volumeChangeTemporary" -> setTemporaryVolume(value.toFloat())
-            "setPlaybackSpeed" -> setPlaybackSpeed(value.toFloat())
-            "volumeScroll" -> adjustFallbackVolume(value.toFloat())
+            "setPlaybackSpeed" -> {
+                if (onEvent(type, value)) return
+                setPlaybackSpeed(value.toFloat())
+            }
             else -> {
                 val eventHandled = onEvent(type, value)
                 if (type.shouldLogNativeControlEvent()) {
@@ -380,16 +643,19 @@ internal class NativePlayerController(
         DesktopPlayerPictureInPicture.toggle()
     }
 
+    override fun adjustVolumeBy(deltaFraction: Float): Boolean {
+        adjustFallbackVolume(deltaFraction * 100f)
+        return true
+    }
+
     @Synchronized
     private fun adjustFallbackVolume(delta: Float) {
         val current = handle
         if (current != 0L) {
-            val nativeLevel = NativePlayerBridge.volume(current)
-                .coerceDesktopPlayerVolumeLevel()
             val currentLevel = resolveDesktopPlayerVolumeLevel(
                 requestedLevel = null,
-                currentLevel = nativeLevel,
-                rememberedLevel = currentVolumeLevel,
+                currentLevel = currentVolumeLevel,
+                rememberedLevel = rememberedVolumeLevel,
             )
             val nextLevel = (currentLevel + (delta / 100f)).coerceDesktopPlayerVolumeLevel()
             setFallbackVolume(nextLevel)
@@ -455,6 +721,7 @@ internal class NativePlayerController(
         return runCatching {
             val isLoading = NativePlayerBridge.isLoading(current)
             val isEnded = NativePlayerBridge.isEnded(current)
+            val videoSize = desktopMpvVideoSize { name -> NativePlayerBridge.stringProperty(current, name) }
             PlayerPlaybackSnapshot(
                 isLoading = isLoading,
                 isPlaying = !NativePlayerBridge.isPaused(current) && !isLoading && !isEnded,
@@ -463,28 +730,243 @@ internal class NativePlayerController(
                 positionMs = NativePlayerBridge.positionMs(current),
                 bufferedPositionMs = NativePlayerBridge.bufferedPositionMs(current),
                 playbackSpeed = NativePlayerBridge.speed(current),
+                videoWidth = videoSize.width,
+                videoHeight = videoSize.height,
             )
         }.getOrDefault(PlayerPlaybackSnapshot(isLoading = true))
     }
 
+    fun releaseBeforeNavigation(onReleased: () -> Unit) {
+        releaseBeforeNavigation(onReleased, onReleaseFailed = {})
+    }
+
+    override fun releaseBeforeNavigation(
+        onReleased: () -> Unit,
+        onReleaseFailed: (String) -> Unit,
+    ) {
+        synchronized(lifecycleLock) {
+            releaseRequested = true
+        }
+        host.resetCursorVisibility()
+        invalidateForRelease()
+        val callback = ReleaseCallback(onReleased, onReleaseFailed)
+        var shouldStart = false
+        var immediateFailure: String? = null
+        val worker = synchronized(lifecycleLock) {
+            val active = releaseInFlight?.takeIf { it.isAlive }
+            when {
+                terminalReleaseFailure != null -> {
+                    immediateFailure = terminalReleaseFailure
+                    active ?: Thread.currentThread()
+                }
+                active != null && releaseTimedOut -> {
+                    immediateFailure = "Native player is still shutting down. Please retry or quit Nuvio."
+                    active
+                }
+                else -> {
+                    releaseCallbacks += callback
+                    active ?: Thread({
+                    awaitThreadCompletion(disposeInFlight, "native teardown")
+                    awaitInFlightCreates()
+                    // A create worker publishes/configures its result on the EDT before leaving
+                    // createsInFlight. Release must drain those already-queued callbacks before
+                    // taking the final disposal snapshot: a stale publication can reject its
+                    // handle and start a tracked disposal after the create thread has exited.
+                    awaitSwingCallbacksQueuedByCreates()
+                    awaitThreadCompletion(disposeInFlight, "native teardown queued by create")
+                    var failureMessage = synchronized(lifecycleLock) { terminalReleaseFailure }
+                    val current = if (failureMessage == null) detachPlayerHandle() else 0L
+                    if (current != 0L) {
+                        log.d { "pre-navigation dispose started handle=$current" }
+                        runCatching { nativeDispose(current) }
+                            .onSuccess { log.d { "pre-navigation dispose completed handle=$current" } }
+                            .onFailure { error ->
+                                failureMessage = "Native player shutdown failed. Quit Nuvio before removing the player."
+                                log.w(error) { "pre-navigation dispose failed handle=$current" }
+                            }
+                    }
+                    val callbacks = synchronized(lifecycleLock) {
+                        releaseInFlight = null
+                        releaseTimedOut = false
+                        if (failureMessage != null) terminalReleaseFailure = failureMessage
+                        releaseCallbacks.toList().also { releaseCallbacks.clear() }
+                    }
+                    SwingUtilities.invokeLater {
+                        callbacks.forEach { pending ->
+                            val invoke = if (failureMessage == null) {
+                                { pending.onReleased() }
+                            } else {
+                                { pending.onFailed(failureMessage) }
+                            }
+                            runCatching(invoke)
+                                .onFailure { error -> log.w(error) { "release callback failed" } }
+                        }
+                    }
+                }, "nuvio-player-release").apply {
+                    isDaemon = true
+                    releaseInFlight = this
+                    releaseTimedOut = false
+                    shouldStart = true
+                }
+            }
+        }
+        }
+        if (immediateFailure != null) {
+            SwingUtilities.invokeLater {
+                runCatching { callback.onFailed(immediateFailure) }
+                    .onFailure { error -> log.w(error) { "immediate release failure callback failed" } }
+            }
+            return
+        }
+        if (shouldStart) {
+            worker.start()
+            startReleaseWatchdog(worker)
+        }
+    }
+
+    private fun startReleaseWatchdog(worker: Thread) {
+        Thread({
+            try {
+                Thread.sleep(releaseTimeoutMs)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return@Thread
+            }
+            val callbacks = synchronized(lifecycleLock) {
+                if (releaseInFlight !== worker || !worker.isAlive) return@synchronized emptyList()
+                releaseTimedOut = true
+                releaseCallbacks.toList().also { releaseCallbacks.clear() }
+            }
+            if (callbacks.isEmpty()) return@Thread
+            SwingUtilities.invokeLater {
+                callbacks.forEach { pending ->
+                    runCatching {
+                        pending.onFailed("Native player shutdown timed out. Please retry or quit Nuvio.")
+                    }.onFailure { error -> log.w(error) { "release timeout callback failed" } }
+                }
+            }
+        }, "nuvio-player-release-watchdog").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
     fun dispose() {
         host.resetCursorVisibility()
+        val accepted = synchronized(lifecycleLock) {
+            if (releaseRequested) {
+                false
+            } else {
+                pendingSource = null
+                true
+            }
+        }
+        if (!accepted) return
+        host.onPeerReady = null
         disposePlayerHandle()
     }
 
-    private fun disposePlayerHandle() {
+    private fun cancelPendingAttachment() {
+        synchronized(lifecycleLock) {
+            pendingSource = null
+        }
+        host.onPeerReady = null
+    }
+
+    private fun invalidateForRelease() {
+        cancelPendingAttachment()
+        host.onCursorActivity = null
+        onAction = { false }
+        onEvent = { _, _ -> false }
+        onScrubChange = { false }
+        onScrubFinished = { false }
+    }
+
+    private fun awaitInFlightCreates() {
+        while (true) {
+            val workers = synchronized(lifecycleLock) {
+                createsInFlight.removeAll { worker -> !worker.isAlive }
+                createsInFlight.toList()
+            }
+            if (workers.isEmpty()) return
+            workers.forEach { worker -> awaitThreadCompletion(worker, "native create") }
+        }
+    }
+
+    private fun awaitSwingCallbacksQueuedByCreates() {
+        val completed = CountDownLatch(1)
+        SwingUtilities.invokeLater { completed.countDown() }
+        var interrupted = false
+        while (true) {
+            try {
+                completed.await()
+                break
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt()
+            log.w { "interrupted while awaiting queued native create callbacks; completion was preserved" }
+        }
+    }
+
+    private fun awaitThreadCompletion(thread: Thread?, operation: String) {
+        if (thread == null || thread === Thread.currentThread()) return
+        var interrupted = false
+        while (thread.isAlive) {
+            try {
+                thread.join()
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt()
+            log.w { "interrupted while awaiting $operation; completion was preserved" }
+        }
+    }
+
+    private fun detachPlayerHandle(): Long = synchronized(lifecycleLock) {
         val current = handle
         handle = 0L
         lastSentControlsStructureKey = null
-        if (current == 0L) return
-        // Native shutdown blocks: it SendMessage()s the player's own UI thread and then joins it.
-        // That UI thread owns child windows of the AWT host, so tearing them down needs the EDT to
-        // keep pumping messages. Disposing on the EDT is therefore a circular wait that deadlocks
-        // the whole app (black, completely unresponsive window). Tear down off the EDT instead.
-        // Tracked so the next attach can wait for it rather than racing it on the same host.
-        disposeInFlight = Thread({ runCatching { NativePlayerBridge.dispose(current) } }, "nuvio-player-dispose").apply {
+        current
+    }
+
+    private fun recordTerminalDisposeFailure(error: Throwable, operation: String, nativeHandle: Long) {
+        synchronized(lifecycleLock) {
+            terminalReleaseFailure = "Native player shutdown failed. Quit Nuvio before removing the player."
+        }
+        log.w(error) { "$operation dispose failed handle=$nativeHandle" }
+    }
+
+    /** Must be called while holding [lifecycleLock]. */
+    private fun startTrackedDisposeLocked(current: Long) {
+        val prior = disposeInFlight?.takeIf { it.isAlive }
+        disposeInFlight = Thread(
+            {
+                awaitThreadCompletion(prior, "prior native teardown")
+                runCatching { nativeDispose(current) }
+                    .onFailure { error -> recordTerminalDisposeFailure(error, "native", current) }
+            },
+            "nuvio-player-dispose",
+        ).apply {
             isDaemon = true
             start()
+        }
+    }
+
+    private fun disposePlayerHandle() {
+        synchronized(lifecycleLock) {
+            if (releaseRequested) return
+            val current = handle
+            if (current == 0L) return
+            handle = 0L
+            lastSentControlsStructureKey = null
+            // Register and start teardown atomically so terminal release cannot sample an empty
+            // worker slot between detaching the handle and starting native disposal.
+            startTrackedDisposeLocked(current)
         }
     }
 
@@ -500,7 +982,14 @@ internal class NativePlayerController(
 
     override fun seekTo(positionMs: Long) {
         log.d { "seekTo positionMs=$positionMs handle=$handle" }
-        handle.takeIf { it != 0L }?.let { NativePlayerBridge.seekTo(it, positionMs) }
+        handle.takeIf { it != 0L }?.let { nativeSeekTo(it, positionMs) }
+    }
+
+    override fun trySeekTo(positionMs: Long): Boolean {
+        val current = handle.takeIf { it != 0L } ?: return false
+        log.d { "trySeekTo positionMs=$positionMs handle=$current" }
+        nativeSeekTo(current, positionMs)
+        return true
     }
 
     override fun seekBy(offsetMs: Long) {
@@ -517,6 +1006,7 @@ internal class NativePlayerController(
             initialPositionMs = pending.initialPositionMs,
             decoderPriority = pending.decoderPriority,
             nvidiaRtxSuperResolutionEnabled = pending.nvidiaRtxSuperResolutionEnabled,
+            nvidiaRtxHdrEnabled = pending.nvidiaRtxHdrEnabled,
             onError = pending.onError,
         )
     }
@@ -537,6 +1027,25 @@ internal class NativePlayerController(
             )
         }
 
+    override suspend fun getChapters(): List<PlayerChapter> {
+        if (!PlayerSettingsRepository.uiState.value.androidExoChaptersEnabled) return emptyList()
+        val current = handle.takeIf { it != 0L } ?: return emptyList()
+        val count = NativePlayerBridge.stringProperty(current, "chapter-list/count").toIntOrNull() ?: return emptyList()
+        return (0 until count).mapNotNull { index ->
+            val seconds = NativePlayerBridge.stringProperty(current, "chapter-list/$index/time").toDoubleOrNull()
+                ?: return@mapNotNull null
+            PlayerChapter(
+                startMs = (seconds * 1000.0).toLong(),
+                title = NativePlayerBridge.stringProperty(current, "chapter-list/$index/title").takeIf { it.isNotBlank() },
+            )
+        }
+    }
+
+    override suspend fun getMediaInfo(): PlayerMediaInfo {
+        val current = handle.takeIf { it != 0L } ?: return PlayerMediaInfo()
+        return mpvMediaInfo { name -> NativePlayerBridge.stringProperty(current, name).takeIf { it.isNotBlank() } }
+    }
+
     override fun getSubtitleTracks(): List<SubtitleTrack> =
         decodeTracks { NativePlayerBridge.subtitleTracksJson(it) }.map { track ->
             SubtitleTrack(
@@ -554,22 +1063,9 @@ internal class NativePlayerController(
         }
 
     override fun applyAudioLanguagePreferences(languages: List<String>) {
-        val preferredLanguages = languages
-            .map(String::trim)
-            .filter(String::isNotEmpty)
-            .map(String::lowercase)
-        if (preferredLanguages.isEmpty()) return
-        val audioTracks = getAudioTracks()
-        for(preferred in preferredLanguages){
-            val trackIndex = audioTracks.indexOfFirst { track ->
-                val language = track.language?.lowercase() ?: return@indexOfFirst false
-                language == preferred || language.startsWith("$preferred-")
-            }
-            if (trackIndex >= 0) {
-                selectAudioTrack(trackIndex)
-                return
-            }
-        }
+        handle.takeIf { it != 0L }?.let { NativePlayerBridge.setAudioLanguages(it, languages.joinToString(",")) }
+        val trackIndex = findPreferredAudioTrackIndex(getAudioTracks(), languages)
+        if (trackIndex >= 0) selectAudioTrack(trackIndex)
     }
 
     override fun selectAudioTrack(index: Int) {
@@ -629,22 +1125,16 @@ internal class NativePlayerController(
         applyPendingSubtitleSettings()
     }
 
+    override fun setSubtitleVisible(visible: Boolean) {
+        handle.takeIf { it != 0L }?.let { NativePlayerBridge.setSubtitleVisible(it, visible) }
+    }
+
     override fun setSubtitleDelayMs(delayMs: Int) {
         val clamped = delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS)
         pendingSubtitleDelayMs = clamped
         handle.takeIf { it != 0L }?.let { current ->
             NativePlayerBridge.setSubtitleDelayMs(current, clamped)
         }
-    }
-
-    override fun setSubtitleLiftPercent(liftPercent: Int) {
-        val clamped = liftPercent.coerceIn(0, 60)
-        if (subtitleLiftPercent == clamped) return
-        subtitleLiftPercent = clamped
-        log.d { "setSubtitleLiftPercent liftPercent=$clamped handle=$handle" }
-        // Re-apply subtitle style dengan sub-pos yang digeser ke atas saat lift
-        // (biar subtitle gak ketutupan control bar yang lagi muncul).
-        applyPendingSubtitleSettings()
     }
 
     // Lift aktif = geser sub-pos lebih tinggi dari nilai user (control bar terlihat).
@@ -660,6 +1150,16 @@ internal class NativePlayerController(
         }
     }
 
+    override fun setSubtitleLiftPercent(liftPercent: Int) {
+        val clamped = liftPercent.coerceIn(0, 60)
+        if (subtitleLiftPercent == clamped) return
+        subtitleLiftPercent = clamped
+        log.d { "setSubtitleLiftPercent liftPercent=$clamped handle=$handle" }
+        // Re-apply subtitle style dengan sub-pos yang digeser ke atas saat lift
+        // (biar subtitle gak ketutupan control bar yang lagi muncul).
+        applyPendingSubtitleSettings()
+    }
+
     private fun applyPendingSubtitleSettings() {
         val current = handle.takeIf { it != 0L } ?: return
         pendingSubtitleDelayMs?.let { delayMs ->
@@ -670,7 +1170,7 @@ internal class NativePlayerController(
         }
     }
 
-    private fun applySubtitleStyle(handle: Long, style: SubtitleStyleState, useLibass: Boolean) {
+    private fun liftedSubtitlePosition(style: SubtitleStyleState): Int {
         val baseSubPos = style.toMpvSubtitlePosition()
         // Jarak subtitle dari bawah layar (%). sub-pos mpv: 100 = bawah, 0 = atas.
         // Makin besar offset user, subtitle makin tinggi -> jarak dari bawah makin besar.
@@ -678,6 +1178,10 @@ internal class NativePlayerController(
         // Cuma naikkan SISA yang kurang: kalau subtitle user sudah di atas bar
         // (jarak >= tinggi bar), lift 0 -> posisi user dibiarkan apa adanya.
         val neededLiftPct = (subtitleLiftPercent - distanceFromBottomPct).coerceAtLeast(0)
+        return (baseSubPos - neededLiftPct).coerceIn(0, 150)
+    }
+
+    private fun applySubtitleStyle(handle: Long, style: SubtitleStyleState, useLibass: Boolean) {
         NativePlayerBridge.applySubtitleStyle(
             handle = handle,
             textColor = style.textColor.toMpvColorString(),
@@ -686,9 +1190,17 @@ internal class NativePlayerController(
             outlineSize = if (style.outlineEnabled) style.outlineWidth.toFloat() else 0f,
             bold = style.bold,
             fontSize = style.toMpvSubtitleFontSize(),
-            subPos = (baseSubPos - neededLiftPct).coerceIn(0, 150),
+            subPos = liftedSubtitlePosition(style),
             useLibass = useLibass,
             stripSdh = style.stripSdh,
+        )
+        val shadowAlpha = if (style.appearance.shadowEnabled) (style.appearance.shadowOpacity * 255 / 100) else 0
+        NativePlayerBridge.setSubtitleAppearance(
+            handle = handle,
+            font = SubtitleFontResolver.mpvFontName(style.appearance.fontId),
+            fontsDir = SubtitleFontResolver.fontsDir(),
+            shadowColor = "#" + shadowAlpha.toHexByte() + "000000",
+            shadowOffset = if (style.appearance.shadowEnabled) style.appearance.shadowSize.toFloat() else 0f,
         )
     }
 
@@ -774,6 +1286,7 @@ private data class PendingSource(
     val initialPositionMs: Long,
     val decoderPriority: Int,
     val nvidiaRtxSuperResolutionEnabled: Boolean,
+    val nvidiaRtxHdrEnabled: Boolean,
     val onError: (String?) -> Unit,
 )
 
@@ -826,7 +1339,7 @@ private data class NativeControlsStructureKey(
     val isInPip: Boolean,
 )
 
-private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
+private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean, onImageReady: () -> Unit): String =
     buildString {
         append('{')
         appendJsonField("title", title)
@@ -852,6 +1365,10 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         appendJsonField("resizeModeLabel", resizeModeLabel)
         append(',')
         appendJsonField("playbackSpeedLabel", playbackSpeedLabel)
+        append(',')
+        appendJsonField("holdToSpeedEnabled", holdToSpeedEnabled)
+        append(',')
+        appendJsonField("holdToSpeedValue", holdToSpeedValue)
         append(',')
         appendJsonField("isFullscreen", isFullscreen)
         append(',')
@@ -935,6 +1452,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         append(',')
         appendJsonField("p2pConsentCancelLabel", p2pConsentCancelLabel)
         append(',')
+        appendJsonField("speedPanelTitle", speedPanelTitle)
+        append(',')
         appendJsonField("audioTracksPanelTitle", audioTracksPanelTitle)
         append(',')
         appendJsonField("noAudioTracksLabel", noAudioTracksLabel)
@@ -948,8 +1467,6 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         appendJsonField("subtitleAddonsTabLabel", subtitleAddonsTabLabel)
         append(',')
         appendJsonField("subtitleStyleTabLabel", subtitleStyleTabLabel)
-        append(',')
-        appendJsonField("customSubtitleStyleLabel", customSubtitleStyleLabel)
         append(',')
         appendJsonField("forcedLabel", forcedLabel)
         append(',')
@@ -984,6 +1501,36 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         appendJsonField("textOpacityLabel", textOpacityLabel)
         append(',')
         appendJsonField("outlineColorLabel", outlineColorLabel)
+        append(',')
+        appendJsonField("fontLabel", fontLabel)
+        append(',')
+        appendJsonField("backgroundColorLabel", backgroundColorLabel)
+        append(',')
+        appendJsonField("backgroundOpacityLabel", backgroundOpacityLabel)
+        append(',')
+        appendJsonField("fontImportLabel", fontImportLabel)
+        append(',')
+        appendJsonField("fontImportHint", fontImportHint)
+        append(',')
+        appendJsonField("fontImportError", fontImportError)
+        append(',')
+        appendJsonField("doneLabel", doneLabel)
+        append(',')
+        appendJsonField("fontRemoveLabel", fontRemoveLabel)
+        append(',')
+        appendJsonField("subtitleFontImportFailed", subtitleFontImportFailed)
+        append(',')
+        appendJsonField("shadowLabel", shadowLabel)
+        append(',')
+        appendJsonField("shadowOpacityLabel", shadowOpacityLabel)
+        append(',')
+        appendJsonField("shadowSizeLabel", shadowSizeLabel)
+        append(',')
+        appendJsonArrayField("subtitleFonts", subtitleFonts) {
+            append("{\"id\":").append(it.id.toJsonString())
+            append(",\"label\":").append(it.label.toJsonString())
+            append('}')
+        }
         append(',')
         appendJsonField("noSubtitleLinesFoundLabel", noSubtitleLinesFoundLabel)
         append(',')
@@ -1032,6 +1579,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         appendJsonField("themeTextMutedColor", themeTextMutedColor)
         append(',')
         appendJsonField("themeBorderDefaultColor", themeBorderDefaultColor)
+        append(',')
+        appendJsonField("themeDangerColor", themeDangerColor)
         append(',')
         appendJsonField("isPlaying", isPlaying)
         append(',')
@@ -1090,6 +1639,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         append(',')
         appendJsonField("nextEpisodeThumbnail", nextEpisodeThumbnail)
         append(',')
+        appendJsonField("nextEpisodeThumbnailBlurred", nextEpisodeThumbnailBlurred)
+        append(',')
         appendJsonField("nextEpisodeStatus", nextEpisodeStatus)
         append(',')
         appendJsonField("nextEpisodeActionLabel", nextEpisodeActionLabel)
@@ -1111,6 +1662,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         appendJsonField("durationMs", durationMs)
         append(',')
         appendJsonField("positionMs", positionMs)
+        append(',')
+        appendJsonField("bufferedPositionMs", bufferedPositionMs)
         append(',')
         appendJsonField("sourceIsLoading", sourceIsLoading)
         append(',')
@@ -1135,6 +1688,8 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         appendJsonField("blurUnwatchedEpisodes", blurUnwatchedEpisodes)
         append(',')
         appendJsonField("submitIntroSegmentType", submitIntroSegmentType)
+        append(',')
+        appendJsonField("submitIntroContentKey", submitIntroContentKey)
         append(',')
         appendJsonField("submitIntroStartTime", submitIntroStartTime)
         append(',')
@@ -1164,8 +1719,6 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         append(',')
         appendJsonField("useCustomSubtitles", useCustomSubtitles)
         append(',')
-        appendJsonField("customSubtitleStylingEnabled", customSubtitleStylingEnabled)
-        append(',')
         appendJsonField("subtitleDelayMs", subtitleDelayMs)
         append(',')
         appendJsonField("hasSelectedAddonSubtitle", hasSelectedAddonSubtitle)
@@ -1185,8 +1738,64 @@ private fun PlayerControlsState.toControlsJson(isFullscreen: Boolean): String =
         appendJsonArrayField("subtitleOutlineColorSwatches", SubtitleOutlineColorSwatches.map { it.toStorageHexString() }) { append(it.toJsonString()) }
         append(',')
         appendJsonField("closeModalsToken", closeModalsToken)
+        append(',')
+        appendJsonField("submitIntroSuccessToken", submitIntroSuccessToken)
+        append(',')
+        appendJsonField("notificationMessage", notificationMessage)
+        append(',')
+        appendJsonField("notificationToken", notificationToken)
+        append(',')
+        appendJsonArrayField("badges", badges) {
+            append("{\"name\":").append(it.name.toJsonString())
+            append(",\"imageUrl\":").append(it.imageURL.toJsonString())
+            append(",\"tagColor\":").append(it.tagColor.toJsonString())
+            append(",\"tagStyle\":").append(it.tagStyle.toJsonString())
+            append(",\"borderColor\":").append(it.borderColor.toJsonString())
+            append('}')
+        }
+        append(',')
+        appendJsonArrayField("chapters", chapters) {
+            append("{\"startMs\":").append(it.startMs)
+            append(",\"title\":").append(it.title.toJsonString())
+            append('}')
+        }
+        append(',')
+        appendJsonField("chapterTitleEnabled", chapterTitleEnabled)
+        append(',')
+        appendJsonField("chaptersLabel", chaptersLabel)
+        append(',')
+        appendJsonField("chaptersPanelTitle", chaptersPanelTitle)
+        append(',')
+        appendJsonField("chapterRemainingTemplate", chapterRemainingTemplate)
+        append(',')
+        appendJsonField("autoSyncedLabel", autoSyncedLabel)
+        append(',')
+        appendJsonField("streamInfoLabel", streamInfoLabel)
+        append(',')
+        appendJsonArrayField("streamInfoSections", streamInfoSections) { section ->
+            append("{\"title\":").append(section.title.toJsonString())
+            append(",\"logo\":").append((section.logo ?: "").toJsonString())
+            append(",\"name\":").append((section.name ?: "").toJsonString())
+            append(",\"subtitle\":").append((section.subtitle ?: "").toJsonString())
+            append(",\"description\":").append((section.description ?: "").toJsonString())
+            append(",\"items\":[")
+            section.items.forEachIndexed { index, item ->
+                if (index > 0) append(',')
+                append("{\"label\":").append(item.label.toJsonString())
+                append(",\"value\":").append(item.value.toJsonString())
+                append('}')
+            }
+            append("]}")
+        }
+        append(",\"party\":")
+        append(partyJson.encodeToString(PlayerControlPartyState.serializer(), party.withWebviewImages(onImageReady)))
         append('}')
     }
+
+private val partyJson = Json { encodeDefaults = true }
+
+private fun PlayerControlPartyState.withWebviewImages(onImageReady: () -> Unit): PlayerControlPartyState =
+    copy(profile = profile.copy(imageUrl = if (active) "" else WebviewImages.resolve(profile.imageUrl, onImageReady)))
 
 private fun PlayerControlsState.nativeControlsStructureKey(): PlayerControlsState =
     copy(
@@ -1194,6 +1803,7 @@ private fun PlayerControlsState.nativeControlsStructureKey(): PlayerControlsStat
         isLoading = false,
         durationMs = 0L,
         positionMs = 0L,
+        bufferedPositionMs = 0L,
     )
 
 private fun StringBuilder.appendJsonField(name: String, value: String) {
@@ -1213,8 +1823,13 @@ private fun StringBuilder.appendJsonField(name: String, value: Float?) {
     append('"').append(name).append("\":")
     if (value == null || value.isNaN() || value.isInfinite()) {
         append("null")
-    } else {
+    } else if (name == "holdToSpeedValue") {
+        append(value.coerceIn(1f, 4f))
+    } else if (name == "volumeLevel") {
+        // Boosted volume boleh sampai 200%, jangan dipotong ke 1.0.
         append(value.coerceIn(0f, 2f))
+    } else {
+        append(value.coerceIn(0f, 1f))
     }
 }
 
@@ -1376,9 +1991,9 @@ private fun StringBuilder.appendSubtitleOptionItemJson(item: PlayerControlSubtit
     append(',')
     appendJsonField("metadata", item.metadata)
     append(',')
-    appendJsonField("detail", item.detail)
-    append(',')
     appendJsonField("isSelected", item.isSelected)
+    append(',')
+    appendJsonField("isAutoSynced", item.isAutoSynced)
     append('}')
 }
 
@@ -1408,6 +2023,8 @@ private fun StringBuilder.appendSubtitleStyleJson(style: SubtitleStyleState) {
     append(',')
     appendJsonField("outlineColor", style.outlineColor.toStorageHexString())
     append(',')
+    appendJsonField("backgroundColor", style.backgroundColor.toStorageHexString())
+    append(',')
     appendJsonField("outlineEnabled", style.outlineEnabled)
     append(',')
     appendJsonField("bold", style.bold)
@@ -1415,6 +2032,14 @@ private fun StringBuilder.appendSubtitleStyleJson(style: SubtitleStyleState) {
     appendJsonField("fontSizeSp", style.fontSizeSp)
     append(',')
     appendJsonField("bottomOffset", style.bottomOffset)
+    append(',')
+    appendJsonField("fontId", style.appearance.fontId)
+    append(',')
+    appendJsonField("shadowEnabled", style.appearance.shadowEnabled)
+    append(',')
+    appendJsonField("shadowOpacity", style.appearance.shadowOpacity)
+    append(',')
+    appendJsonField("shadowSize", style.appearance.shadowSize)
     append('}')
 }
 

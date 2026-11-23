@@ -1,5 +1,6 @@
 package com.nuvio.app.features.home.components
 
+import com.nuvio.app.core.ui.rememberAnimatedArtworkAnimation
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import com.nuvio.app.features.shuffle.ShuffleBadge
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -58,6 +60,7 @@ import com.nuvio.app.core.ui.PosterCardStyleUiState
 import com.nuvio.app.core.ui.ScopedDisintegrationTracker
 import com.nuvio.app.core.ui.landscapePosterHeightForWidth
 import com.nuvio.app.core.ui.landscapePosterWidth
+import com.nuvio.app.core.ui.nuvioFocusBorder
 import com.nuvio.app.core.ui.posterCardClickable
 import com.nuvio.app.core.ui.desktopPosterHoverScale
 import com.nuvio.app.core.ui.rememberPosterCardStyleUiState
@@ -70,9 +73,11 @@ import com.nuvio.app.features.watchprogress.WatchProgressCompletionPercentThresh
 import com.nuvio.app.features.watchprogress.continueWatchingItemKey
 import com.nuvio.app.features.watchprogress.CurrentDateProvider
 import com.nuvio.app.features.watchprogress.computeAirDateBadgeText
+import com.nuvio.app.isDesktop
 import kotlin.math.roundToInt
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
+import com.nuvio.app.core.i18n.localizedEpisodeTitle
 
 private val ContinueWatchingStatusBadgeShape = RoundedCornerShape(4.dp)
 private val ContinueWatchingNewEpisodeBadgeColor = Color(0xFF1D4ED8)
@@ -258,7 +263,7 @@ internal fun ContinueWatchingItem.shouldBlurContinueWatchingArtwork(
     useEpisodeThumbnails: Boolean,
     artworkUrl: String?,
 ): Boolean {
-    if (!blurUnwatchedEpisodes || !useEpisodeThumbnails) return false
+    if (!blurUnwatchedEpisodes || !useEpisodeThumbnails || isWatched) return false
     val thumbnail = episodeThumbnail?.trim()?.takeIf { it.isNotBlank() } ?: return false
     val artwork = artworkUrl?.trim()?.takeIf { it.isNotBlank() } ?: return false
     val isUnwatched = isNextUp || progressFraction < WatchProgressCompletionPercentThreshold / 100f
@@ -703,13 +708,20 @@ private fun ContinueWatchingCard(
     } else {
         null
     }
-    val episodeTitle = item.episodeTitle?.trim()?.takeIf { it.isNotBlank() } ?: airDateText
+    val episodeTitle = localizedEpisodeTitle(item.episodeTitle, item.episodeNumber) ?: airDateText
     val badgeText = continueWatchingCardBadgeText(item = item, airDateText = airDateText)
     val backgroundColor = MaterialTheme.colorScheme.background
     val badgeBackground = continueWatchingBadgeBackground(item)
 
     Box(
         modifier = Modifier
+            .nuvioFocusBorder(RoundedCornerShape(cardMetrics.cornerRadius))
+            .posterCardClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+                zoomImageUrl = imageUrl,
+                zoomCornerRadius = cardMetrics.cornerRadius,
+            )
             .width(cardMetrics.width)
             .aspectRatio(PosterLandscapeAspectRatio)
             .clip(RoundedCornerShape(cardMetrics.cornerRadius))
@@ -717,12 +729,6 @@ private fun ContinueWatchingCard(
             .nuvioCardDepth(
                 shape = RoundedCornerShape(cardMetrics.cornerRadius),
                 surface = NuvioCardDepthSurface.ContinueWatching,
-            )
-            .posterCardClickable(
-                onClick = onClick,
-                onLongClick = onLongClick,
-                zoomImageUrl = imageUrl,
-                zoomCornerRadius = cardMetrics.cornerRadius,
             ),
     ) {
         if (imageUrl != null) {
@@ -758,8 +764,10 @@ private fun ContinueWatchingCard(
                         )
                     },
                 contentScale = ContentScale.Crop,
+                desktopAnimation = rememberAnimatedArtworkAnimation(),
             )
         }
+        if (item.shufflePlayback) ShuffleBadge(Modifier.align(Alignment.TopStart).padding(8.dp))
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -894,6 +902,7 @@ private fun ContinueWatchingWideCard(
     val cornerRadius = rememberPosterCardStyleUiState().cornerRadiusDp.dp
     Row(
         modifier = Modifier
+            .nuvioFocusBorder(RoundedCornerShape(cornerRadius))
             .posterCardClickable(onClick = onClick, onLongClick = onLongClick)
             .width(layout.wideCardWidth)
             .height(layout.wideCardHeight)
@@ -928,7 +937,7 @@ private fun ContinueWatchingWideCard(
         ) {
             val isCompact = layout.wideCardWidth < 350.dp
             val wideMetaLine = localizedContinueWatchingMetaLine(item)
-            val episodeTitle = item.episodeTitle?.trim()?.takeIf { it.isNotBlank() }
+            val episodeTitle = localizedEpisodeTitle(item.episodeTitle, item.episodeNumber)
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -946,6 +955,7 @@ private fun ContinueWatchingWideCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (item.shufflePlayback) ShuffleBadge()
                     if (item.progressFraction <= 0f && item.seasonNumber != null && item.episodeNumber != null) {
                         val todayIsoDate = CurrentDateProvider.todayIsoDate()
                         val badgeText = when {
@@ -1030,7 +1040,8 @@ private fun ContinueWatchingPosterCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(layout.posterCardHeight)
+                .let { if (isDesktop) it.aspectRatio(0.675f) else it.height(layout.posterCardHeight) }
+                .nuvioFocusBorder(RoundedCornerShape(cornerRadius))
                 .clip(RoundedCornerShape(cornerRadius))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .nuvioCardDepth(
@@ -1063,8 +1074,10 @@ private fun ContinueWatchingPosterCard(
                         .fillMaxSize()
                         .then(if (shouldBlurArtwork) Modifier.blur(18.dp) else Modifier),
                     contentScale = if (item.isCloudLibraryItem()) ContentScale.Fit else ContentScale.Crop,
+                    desktopAnimation = rememberAnimatedArtworkAnimation(),
                 )
             }
+            if (item.shufflePlayback) ShuffleBadge(Modifier.align(Alignment.TopStart).padding(8.dp))
             if (item.progressFraction <= 0f && item.seasonNumber != null && item.episodeNumber != null) {
                 Box(
                     modifier = Modifier
@@ -1174,6 +1187,7 @@ private fun ArtworkPanel(
                     .fillMaxSize()
                     .then(if (blurred) Modifier.blur(18.dp) else Modifier),
                 contentScale = contentScale,
+                desktopAnimation = rememberAnimatedArtworkAnimation(),
             )
         }
     }
@@ -1244,7 +1258,7 @@ internal fun rememberContinueWatchingLayout(
             wideCardHeight = 160.dp,
             widePosterStripWidth = 100.dp,
             wideContentPadding = 16.dp,
-            posterCardWidth = posterCardStyle.widthDp.dp,
+            posterCardWidth = desktopCatalogShelfPosterBaseWidthDp(posterCardStyle.widthDp).dp,
             posterCardHeight = posterCardStyle.heightDp.dp,
             progressHeight = 6.dp,
             wideTitleSize = 20.sp,
@@ -1262,7 +1276,7 @@ internal fun rememberContinueWatchingLayout(
             wideCardHeight = 140.dp,
             widePosterStripWidth = 90.dp,
             wideContentPadding = 14.dp,
-            posterCardWidth = posterCardStyle.widthDp.dp,
+            posterCardWidth = desktopCatalogShelfPosterBaseWidthDp(posterCardStyle.widthDp).dp,
             posterCardHeight = posterCardStyle.heightDp.dp,
             progressHeight = 5.dp,
             wideTitleSize = 18.sp,
@@ -1280,7 +1294,7 @@ internal fun rememberContinueWatchingLayout(
             wideCardHeight = 130.dp,
             widePosterStripWidth = 85.dp,
             wideContentPadding = 12.dp,
-            posterCardWidth = posterCardStyle.widthDp.dp,
+            posterCardWidth = desktopCatalogShelfPosterBaseWidthDp(posterCardStyle.widthDp).dp,
             posterCardHeight = posterCardStyle.heightDp.dp,
             progressHeight = 4.dp,
             wideTitleSize = 17.sp,
@@ -1298,7 +1312,7 @@ internal fun rememberContinueWatchingLayout(
             wideCardHeight = 120.dp,
             widePosterStripWidth = 80.dp,
             wideContentPadding = 12.dp,
-            posterCardWidth = posterCardStyle.widthDp.dp,
+            posterCardWidth = desktopCatalogShelfPosterBaseWidthDp(posterCardStyle.widthDp).dp,
             posterCardHeight = posterCardStyle.heightDp.dp,
             progressHeight = 4.dp,
             wideTitleSize = 16.sp,

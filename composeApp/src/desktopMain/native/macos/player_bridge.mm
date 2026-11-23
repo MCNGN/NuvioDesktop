@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <IOKit/IOKitLib.h>
 #import <IOKit/hidsystem/ev_keymap.h>
+#import <MediaPlayer/MediaPlayer.h>
 #define GL_SILENCE_DEPRECATION
 #import <OpenGL/OpenGL.h>
 #import <OpenGL/gl3.h>
@@ -13,8 +14,10 @@
 #include <mpv/render_gl.h>
 
 #include <atomic>
+#include <clocale>
 #include <cmath>
 #include <dlfcn.h>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -82,6 +85,40 @@ static constexpr double kMaxVolumePercent = 200.0;
 @property(nonatomic, weak) MpvWebPlayer *player;
 @end
 
+@interface PlayerControlsWebView : WKWebView
+@end
+
+@implementation PlayerControlsWebView
+
+- (BOOL)isTitleBarPoint:(NSPoint)point {
+    NSWindow *window = self.window;
+    if (!window
+        || !(window.styleMask & NSWindowStyleMaskTitled)
+        || !(window.styleMask & NSWindowStyleMaskFullSizeContentView)
+        || (window.styleMask & NSWindowStyleMaskFullScreen)) {
+        return NO;
+    }
+    NSRect boundsInWindow = [self convertRect:self.bounds toView:nil];
+    return NSPointInRect(point, boundsInWindow)
+        && point.y >= NSMaxY(window.contentLayoutRect);
+}
+
+- (NSView *)hitTest:(NSPoint)point {
+    NSView *view = [super hitTest:point];
+    NSPoint pointInWindow = [self.superview convertPoint:point toView:nil];
+    return view && [self isTitleBarPoint:pointInWindow] ? self : view;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    if ([self isTitleBarPoint:event.locationInWindow]) {
+        [self.window performWindowDragWithEvent:event];
+        return;
+    }
+    [super mouseDown:event];
+}
+
+@end
+
 @interface MpvWebPlayer : NSObject
 - (instancetype)initWithHostView:(NSView *)hostView
                        sourceUrl:(NSString *)sourceUrl
@@ -115,11 +152,13 @@ static constexpr double kMaxVolumePercent = 200.0;
 - (NSString *)audioTracksJson;
 - (NSString *)subtitleTracksJson;
 - (void)selectAudioTrackId:(int)trackId;
+- (void)setAudioLanguages:(NSString *)languages;
 - (void)selectSubtitleTrackId:(int)trackId;
 - (void)addSubtitleUrl:(NSString *)url;
 - (void)removeExternalSubtitles;
 - (void)removeExternalSubtitlesAndSelect:(int)trackId;
 - (void)setSubtitleDelayMs:(int)delayMs;
+- (void)setSubtitleVisible:(BOOL)visible;
 - (void)applySubtitleStyleWithTextColor:(NSString *)textColor
                         backgroundColor:(NSString *)backgroundColor
                             outlineColor:(NSString *)outlineColor
@@ -127,8 +166,13 @@ static constexpr double kMaxVolumePercent = 200.0;
                                     bold:(BOOL)bold
                                 fontSize:(double)fontSize
                                   subPos:(int)subPos
-                               useLibass:(BOOL)useLibass;
+                               useLibass:(BOOL)useLibass
+                                stripSdh:(BOOL)stripSdh;
 - (BOOL)activeSubtitleIsAss;
+- (void)applySubtitleAppearanceWithFont:(NSString *)font
+                              fontsDir:(NSString *)fontsDir
+                           shadowColor:(NSString *)shadowColor
+                          shadowOffset:(double)shadowOffset;
 - (void)handleScriptMessage:(NSDictionary *)message;
 - (void)startMpvEventDrain;
 - (void)applyVolumeSplit:(double)percent;
@@ -138,6 +182,15 @@ static constexpr double kMaxVolumePercent = 200.0;
 - (void)focusControlsWebViewIfNeeded;
 - (void)layoutNativeSubviews;
 - (void)dispatchMediaKeyPlayerEvent:(NSString *)type;
+- (void)activateRemoteCommands;
+- (void)deactivateRemoteCommands;
+- (void)setNowPlayingArtworkUrlString:(NSString *)urlString;
+- (void)setNowPlayingTitle:(NSString *)title subtitle:(NSString *)subtitle artworkUrl:(NSString *)artworkUrl;
+- (void)updateNowPlayingWithTitle:(NSString *)title
+                         duration:(double)duration
+                         position:(double)position
+                           paused:(BOOL)paused
+                            speed:(double)speed;
 - (void)layoutControlsWebViewToBounds:(NSRect)bounds immediate:(BOOL)immediate;
 - (void)hostViewBoundsDidChange:(NSNotification *)notification;
 - (void)hostViewFrameDidChange:(NSNotification *)notification;
@@ -151,6 +204,12 @@ static constexpr double kMaxVolumePercent = 200.0;
 - (void)handleFullscreenTransitionTimer:(NSTimer *)timer;
 - (void)schedulePostResizeRefreshWithReason:(NSString *)reason;
 - (void)handleResizeSettleTimer:(NSTimer *)timer;
+- (void)scheduleControlsResizeEnded;
+- (void)handleControlsResizeEndTimer:(NSTimer *)timer;
+- (void)beginWindowTrackingWithEdge:(NSInteger)edge;
+- (void)trackWindowToMouse:(NSPoint)mouse;
+- (void)endWindowTracking;
+- (BOOL)isNativeLiveResize;
 - (void)configureHdrForCurrentScreenWithReason:(NSString *)reason force:(BOOL)force;
 - (void)applyHdrForPolledGamma:(NSString *)gamma primaries:(NSString *)primaries reason:(NSString *)reason force:(BOOL)force;
 - (NSEvent *)handleMediaKeyEvent:(NSEvent *)event;
@@ -1038,7 +1097,26 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     NSTimer *_timer;
     NSTimer *_resizeSettleTimer;
     NSTimer *_fullscreenTransitionTimer;
+    NSTimer *_controlsResizeEndTimer;
     id _mediaKeyMonitor;
+    id _windowTrackingMonitor;
+    __weak NSWindow *_windowTrackingWindow;
+    NSInteger _windowTrackingEdge;
+    NSPoint _windowTrackingStartMouse;
+    NSRect _windowTrackingStartFrame;
+    BOOL _remoteCommandsActive;
+    NSString *_lastNowPlayingTitle;
+    BOOL _lastNowPlayingPaused;
+    double _lastNowPlayingDuration;
+    double _lastNowPlayingPosition;
+    double _lastNowPlayingSpeed;
+    NSTimeInterval _lastNowPlayingPushedAt;
+    NSString *_nowPlayingArtworkUrl;
+    MPMediaItemArtwork *_nowPlayingArtwork;
+    NSURLSessionDataTask *_nowPlayingArtworkTask;
+    NSString *_nowPlayingTitleOverride;
+    NSString *_nowPlayingSubtitle;
+    BOOL _nowPlayingMetadataDirty;
     JavaVM *_javaVm;
     jobject _eventSink;
     jmethodID _eventMethod;
@@ -1066,6 +1144,9 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     NSTimeInterval _lastControlsViewportNudgeAt;
     std::atomic<double> _cachedDurationSeconds;
     std::atomic<double> _cachedPositionSeconds;
+    std::mutex _cachedPositionLock;
+    double _cachedPositionStamp;
+    uint64_t _cachedPositionGeneration;
     std::atomic<double> _cachedCacheAheadSeconds;
     std::atomic<double> _cachedSpeed;
     std::atomic_bool _cachedPaused;
@@ -1099,6 +1180,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 
     _cachedDurationSeconds.store(0.0);
     _cachedPositionSeconds.store(initialPositionMs > 0 ? (double)initialPositionMs / 1000.0 : 0.0);
+    _cachedPositionStamp = CACurrentMediaTime();
     _cachedCacheAheadSeconds.store(0.0);
     _cachedSpeed.store(1.0);
     _cachedPaused.store(!playWhenReady);
@@ -1129,7 +1211,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 
     WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
     configuration.userContentController = contentController;
-    _webView = [[WKWebView alloc] initWithFrame:_hostView.bounds configuration:configuration];
+    _webView = [[PlayerControlsWebView alloc] initWithFrame:_hostView.bounds configuration:configuration];
     _webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     _webView.wantsLayer = YES;
     [_webView setValue:@NO forKey:@"drawsBackground"];
@@ -1178,6 +1260,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
         }
         return [strongSelf handleMediaKeyEvent:event];
     }];
+    [self activateRemoteCommands];
     [self layoutNativeSubviews];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self focusControlsWebViewIfNeeded];
@@ -1218,6 +1301,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 
 - (void)reparentSurfaceToHostView:(NSView *)newHostView {
     if (!newHostView || !newHostView.window) return;
+    [self endWindowTracking];
     NSView *oldHostView = _hostView;
     [[NSNotificationCenter defaultCenter] removeObserver:self
                                                       name:NSViewFrameDidChangeNotification
@@ -1243,8 +1327,18 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                                                  name:NSViewBoundsDidChangeNotification
                                                object:_hostView];
     _didFocusControlsWebView = NO;
+    // A reparent is a discrete move, not an animated resize. Without this reset the
+    // size difference reads as a layout jump and holds the layer in resize mode for
+    // the 1.25 s transition plus settle delay; while paused, nothing draws until then.
+    _lastAppliedNativeLayoutBounds = NSZeroRect;
+    _lastAppliedNativeLayoutWasLiveResize = NO;
+    _lightweightResizeSettleUntil = 0.0;
+    if (!_fullscreenTransitionActive) {
+        [_videoView setFullscreenTransitionActive:NO];
+    }
     [self layoutNativeSubviews];
     [_videoView updateMetalLayerLayout];
+    [_videoView scheduleRenderUpdate];
     [self requestFocus];
 }
 
@@ -1274,6 +1368,157 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     _lastControlsViewportNudgeAt = now;
     NSString *script = @"window.nuvioNativeViewportChanged ? window.nuvioNativeViewportChanged() : window.dispatchEvent(new Event('resize'));";
     [_webView evaluateJavaScript:script completionHandler:nil];
+    [self scheduleControlsResizeEnded];
+}
+
+// The controls page hides PiP chrome between viewport-changed and resize-ended.
+// Windows reports the end of its modal size loop; AppKit has no equivalent for
+// programmatic and reparent-driven size changes, so close the pair once layout is quiet.
+- (void)scheduleControlsResizeEnded {
+    [_controlsResizeEndTimer invalidate];
+    _controlsResizeEndTimer = [NSTimer scheduledTimerWithTimeInterval:0.25
+                                                               target:self
+                                                             selector:@selector(handleControlsResizeEndTimer:)
+                                                             userInfo:nil
+                                                              repeats:NO];
+}
+
+- (void)handleControlsResizeEndTimer:(NSTimer *)timer {
+    _controlsResizeEndTimer = nil;
+    if (!_webView) {
+        return;
+    }
+    if (_windowTrackingMonitor && ([NSEvent pressedMouseButtons] & 1) == 0) {
+        // Deactivation can swallow the mouse-up the monitor waits for.
+        [self endWindowTracking];
+    }
+    if (_windowTrackingMonitor || [self isNativeLiveResize] || _fullscreenTransitionActive) {
+        [self scheduleControlsResizeEnded];
+        return;
+    }
+    NSString *script = @"window.nuvioNativeResizeEnded ? window.nuvioNativeResizeEnded() : document.getElementById('playerRoot')?.classList.remove('native-resizing');";
+    [_webView evaluateJavaScript:script completionHandler:nil];
+}
+
+// The PiP window is a borderless AWT window, which AppKit neither moves nor resizes.
+// The controls page detects the gesture and asks for it here while the button is
+// still down; follow the mouse with a monitor so WebKit still sees the mouse-up.
+- (void)beginWindowTrackingWithEdge:(NSInteger)edge {
+    NSWindow *window = _hostView.window;
+    if (!window || ([NSEvent pressedMouseButtons] & 1) == 0) {
+        if (edge != 0) {
+            [self scheduleControlsResizeEnded];
+        }
+        return;
+    }
+    [self endWindowTracking];
+    _windowTrackingWindow = window;
+    _windowTrackingEdge = edge;
+    _windowTrackingStartMouse = [NSEvent mouseLocation];
+    _windowTrackingStartFrame = window.frame;
+    __weak MpvWebPlayer *weakSelf = self;
+    __weak NSWindow *weakWindow = window;
+    _windowTrackingMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+                                                                   handler:^NSEvent *(NSEvent *event) {
+        MpvWebPlayer *player = weakSelf;
+        if (!player) {
+            return event;
+        }
+        if (event.window != weakWindow || event.type == NSEventTypeLeftMouseUp) {
+            [player endWindowTracking];
+        } else {
+            [player trackWindowToMouse:[NSEvent mouseLocation]];
+        }
+        return event;
+    }];
+    if (edge != 0) {
+        // Arm the lost-mouse-up check now; live layout does not schedule it.
+        [self scheduleControlsResizeEnded];
+    }
+}
+
+- (void)trackWindowToMouse:(NSPoint)mouse {
+    NSWindow *window = _windowTrackingWindow;
+    // Leaving PiP mid-gesture reparents the player; never apply PiP geometry elsewhere.
+    if (!window || window != _hostView.window) {
+        [self endWindowTracking];
+        return;
+    }
+    CGFloat dx = mouse.x - _windowTrackingStartMouse.x;
+    CGFloat dy = mouse.y - _windowTrackingStartMouse.y;
+    NSRect start = _windowTrackingStartFrame;
+    if (_windowTrackingEdge == 0) {
+        [window setFrameOrigin:NSMakePoint(start.origin.x + dx, start.origin.y + dy)];
+        return;
+    }
+
+    // Edge codes match Win32 hit tests: 10 left, 11 right, 12 top, 13 top-left,
+    // 14 top-right, 15 bottom, 16 bottom-left, 17 bottom-right.
+    NSInteger edge = _windowTrackingEdge;
+    BOOL left = edge == 10 || edge == 13 || edge == 16;
+    BOOL right = edge == 11 || edge == 14 || edge == 17;
+    BOOL top = edge == 12 || edge == 13 || edge == 14;
+    BOOL bottom = edge == 15 || edge == 16 || edge == 17;
+
+    NSSize aspect = window.contentAspectRatio;
+    float ratio = aspect.width > 0.0 && aspect.height > 0.0
+        ? (float)(aspect.width / aspect.height)
+        : (float)(start.size.width / MAX(start.size.height, 1.0));
+    CGFloat widthDelta = left ? -dx : (right ? dx : 0.0);
+    CGFloat heightDelta = top ? dy : (bottom ? -dy : 0.0);
+    CGFloat width;
+    if ((left || right) && (top || bottom)) {
+        // Project the drag onto the aspect diagonal. Picking whichever axis moved
+        // further flips between two sizes on diagonal drags, which reads as jitter.
+        // Project the displacement, not the start size, whose height was truncated.
+        CGFloat r = (CGFloat)ratio;
+        width = start.size.width + (widthDelta * r * r + heightDelta * r) / (r * r + 1.0);
+    } else if (left || right) {
+        width = start.size.width + widthDelta;
+    } else {
+        width = (start.size.height + heightDelta) * ratio;
+    }
+
+    // Keep the edges opposite the drag fixed and stop the moving edges at the visible frame.
+    NSRect visible = (window.screen ?: NSScreen.mainScreen).visibleFrame;
+    if (visible.size.width > 0.0 && visible.size.height > 0.0) {
+        CGFloat widthLimit = left ? NSMaxX(start) - NSMinX(visible) : NSMaxX(visible) - NSMinX(start);
+        CGFloat heightLimit = top ? NSMaxY(visible) - NSMinY(start) : NSMaxY(start) - NSMinY(visible);
+        CGFloat maxWidth = MIN(widthLimit, heightLimit * ratio);
+        width = MIN(width, MAX(maxWidth, start.size.width));
+    }
+    NSSize minSize = window.minSize;
+    width = floor(MAX(width, MAX(minSize.width, minSize.height * ratio)));
+    // Match the PiP window's default bounds, (width / aspectRatio).toInt() in float.
+    CGFloat height = MAX((CGFloat)(int)((float)width / ratio), minSize.height);
+
+    CGFloat x = left ? NSMaxX(start) - width : NSMinX(start);
+    CGFloat y = top ? NSMinY(start) : NSMaxY(start) - height;
+    [window setFrame:NSMakeRect(x, y, width, height) display:YES];
+}
+
+- (void)endWindowTracking {
+    if (!_windowTrackingMonitor) {
+        return;
+    }
+    [NSEvent removeMonitor:_windowTrackingMonitor];
+    _windowTrackingMonitor = nil;
+    _windowTrackingWindow = nil;
+    if (_windowTrackingEdge != 0) {
+        _windowTrackingEdge = 0;
+        // Leave resize mode through the same settle path as an AppKit live resize.
+        [self layoutNativeSubviews];
+        [self scheduleControlsResizeEnded];
+    }
+}
+
+// AppKit only reports live resize for its own resize loop. Treat the PiP resize
+// tracked above the same way so each step skips the full WebKit and synchronous
+// GL layout, which cannot keep up with mouse-drag frame changes.
+- (BOOL)isNativeLiveResize {
+    return _hostView.inLiveResize
+        || _hostView.window.inLiveResize
+        || (_windowTrackingMonitor && _windowTrackingEdge != 0);
 }
 
 - (void)layoutNativeSubviews {
@@ -1286,7 +1531,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     }
 
     NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
-    BOOL nativeLiveResize = _hostView.inLiveResize || _hostView.window.inLiveResize;
+    BOOL nativeLiveResize = [self isNativeLiveResize];
     BOOL wasResizeLikeLayout = _lastAppliedNativeLayoutWasLiveResize
         || _fullscreenTransitionActive
         || (_lightweightResizeSettleUntil > now);
@@ -1338,6 +1583,9 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     [CATransaction commit];
 
     if (liveResize || settlingFromResize) {
+        // The resize-mode layer only draws when asked. A paused player gets no
+        // mpv frame callbacks, so redraw the current frame at the new size here.
+        [_videoView scheduleRenderUpdate];
         if (_mpv) {
             [self schedulePostResizeRefreshWithReason:liveResize ? @"live-layout" : @"settle-layout"];
         }
@@ -1454,7 +1702,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     if (!_mpv || !_videoView) {
         return;
     }
-    if (_hostView.inLiveResize || _hostView.window.inLiveResize || _fullscreenTransitionActive) {
+    if ([self isNativeLiveResize] || _fullscreenTransitionActive) {
         [self schedulePostResizeRefreshWithReason:timer.userInfo ?: @"unknown"];
         return;
     }
@@ -1471,6 +1719,14 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
               playWhenReady:(BOOL)playWhenReady
            initialPositionMs:(long long)initialPositionMs
             decoderPriority:(int)decoderPriority {
+    // libmpv requires LC_NUMERIC=C: non-"C" locales that use comma decimals
+    // make mpv_create fail. The JVM formats numbers through java.util.Locale,
+    // so this C-level change does not affect Java number formatting.
+    if (setlocale(LC_NUMERIC, "C") == nullptr) {
+        @throw [NSException exceptionWithName:@"PlayerBridgeError"
+                                       reason:@"setlocale(LC_NUMERIC, \"C\") failed"
+                                     userInfo:nil];
+    }
     _mpv = mpv_create();
     if (!_mpv) {
         @throw [NSException exceptionWithName:@"PlayerBridgeError"
@@ -1506,8 +1762,11 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     setMpvOptionString(_mpv, "hdr-compute-peak", "no");
     setMpvOptionString(_mpv, "dither-depth", "auto");
     setMpvOptionString(_mpv, "demuxer-max-bytes", "150MiB");
-    setMpvOptionString(_mpv, "cache-secs", "120");
-    setMpvOptionString(_mpv, "hr-seek", "no");
+    setMpvOptionString(
+        _mpv,
+        "stream-lavf-o",
+        "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%23%408,429,500,502,503,504,reconnect_delay_max=15"
+    );
 
     if (headerLines.count > 0) {
         NSMutableArray *escaped = [NSMutableArray arrayWithCapacity:headerLines.count];
@@ -1574,20 +1833,26 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                 return;
             }
 
+            uint64_t positionGeneration = [self cachedPositionGeneration];
             double duration = [self doubleProperty:"duration" fallback:0.0];
             double position = [self doubleProperty:"time-pos" fallback:0.0];
+            double positionReadAt = CACurrentMediaTime();
             double volumeLevel = [self volume];
             double cacheAhead = [self cacheAheadSecondsForPosition:position];
+            double bufferedPosition = (double)([self bufferedPositionMs] / 1000.0);
             BOOL paused = [self rawIsPaused];
             BOOL ended = [self rawIsEnded];
             BOOL loading = [self rawLoadingWithPaused:paused ended:ended duration:duration];
             double speed = [self rawSpeed];
             NSString *audioTracks = [self audioTracksJson] ?: @"[]";
             NSString *subtitleTracks = [self subtitleTracksJson] ?: @"[]";
+            NSString *mediaTitle = [self stringProperty:"media-title" fallback:@""];
             NSString *gamma = [[self stringProperty:"video-params/gamma" fallback:@""] lowercaseString];
             NSString *primaries = [[self stringProperty:"video-params/primaries" fallback:@""] lowercaseString];
             [self updateCachedDuration:duration
                               position:position
+                        positionReadAt:positionReadAt
+                    positionGeneration:positionGeneration
                             cacheAhead:cacheAhead
                                 paused:paused
                                  loading:loading
@@ -1600,10 +1865,16 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
                     return;
                 }
                 [self applyHdrForPolledGamma:gamma primaries:primaries reason:@"sync" force:NO];
+                [self updateNowPlayingWithTitle:mediaTitle
+                                       duration:duration
+                                       position:position
+                                         paused:paused
+                                          speed:speed];
                 NSString *script = [NSString stringWithFormat:
-                    @"window.playerUpdate({duration:%0.3f,position:%0.3f,volumeLevel:%0.3f,paused:%@,loading:%@,audioTracks:%@,subtitleTracks:%@})",
+                    @"window.playerUpdate({duration:%0.3f,position:%0.3f,bufferedPosition:%0.3f,volumeLevel:%0.3f,paused:%@,loading:%@,audioTracks:%@,subtitleTracks:%@})",
                     duration,
                     position,
+                    bufferedPosition,
                     volumeLevel,
                     paused ? @"true" : @"false",
                     loading ? @"true" : @"false",
@@ -1816,10 +2087,14 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     _resizeSettleTimer = nil;
     [_fullscreenTransitionTimer invalidate];
     _fullscreenTransitionTimer = nil;
+    [_controlsResizeEndTimer invalidate];
+    _controlsResizeEndTimer = nil;
+    [self endWindowTracking];
     if (_mediaKeyMonitor) {
         [NSEvent removeMonitor:_mediaKeyMonitor];
         _mediaKeyMonitor = nil;
     }
+    [self deactivateRemoteCommands];
     _controlsWebReady = NO;
     _pendingControlsJson = nil;
     if (_mpvEventQueue) {
@@ -1856,6 +2131,7 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
     if (!_mpv) return;
     int flag = paused ? 1 : 0;
     mpv_set_property(_mpv, "pause", MPV_FORMAT_FLAG, &flag);
+    [self storeCachedPosition:[self estimatedPositionSeconds] at:CACurrentMediaTime()];
     _cachedPaused.store(paused);
 }
 
@@ -1873,24 +2149,24 @@ static void setMpvOptionString(mpv_handle *mpv, const char *name, const char *va
 - (void)seekToMilliseconds:(long long)positionMs {
     if (!_mpv) return;
     std::string seconds = std::to_string((double)positionMs / 1000.0);
-    const char *command[] = {"seek", seconds.c_str(), "absolute+keyframes", NULL};
+    const char *command[] = {"seek", seconds.c_str(), "absolute+exact", NULL};
     mpv_command(_mpv, command);
-    _cachedPositionSeconds.store(fmax((double)positionMs / 1000.0, 0.0));
+    [self storeCachedPosition:(double)positionMs / 1000.0 at:CACurrentMediaTime()];
 }
 
 - (void)seekByMilliseconds:(long long)offsetMs {
     if (!_mpv) return;
     std::string seconds = std::to_string((double)offsetMs / 1000.0);
-    const char *command[] = {"seek", seconds.c_str(), "relative+keyframes", NULL};
+    const char *command[] = {"seek", seconds.c_str(), "relative+exact", NULL};
     mpv_command(_mpv, command);
-    double nextPosition = fmax(_cachedPositionSeconds.load() + ((double)offsetMs / 1000.0), 0.0);
-    _cachedPositionSeconds.store(nextPosition);
+    [self storeCachedPosition:[self estimatedPositionSeconds] + ((double)offsetMs / 1000.0) at:CACurrentMediaTime()];
 }
 
 - (void)setSpeed:(double)speed {
     if (!_mpv) return;
     double clamped = fmax(0.25, fmin(4.0, speed));
     mpv_set_property(_mpv, "speed", MPV_FORMAT_DOUBLE, &clamped);
+    [self storeCachedPosition:[self estimatedPositionSeconds] at:CACurrentMediaTime()];
     _cachedSpeed.store(clamped);
 }
 
@@ -2067,7 +2343,34 @@ static void nuvioMpvWakeup(void *ctx) {
 }
 
 - (long long)positionMs {
-    return (long long)llround(fmax(_cachedPositionSeconds.load(), 0.0) * 1000.0);
+    return (long long)llround(fmax([self estimatedPositionSeconds], 0.0) * 1000.0);
+}
+
+- (void)storeCachedPosition:(double)seconds at:(double)stamp {
+    std::lock_guard<std::mutex> guard(_cachedPositionLock);
+    _cachedPositionSeconds.store(std::isfinite(seconds) ? fmax(seconds, 0.0) : 0.0);
+    _cachedPositionStamp = stamp;
+    _cachedPositionGeneration += 1;
+}
+
+- (uint64_t)cachedPositionGeneration {
+    std::lock_guard<std::mutex> guard(_cachedPositionLock);
+    return _cachedPositionGeneration;
+}
+
+- (double)estimatedPositionSeconds {
+    double position = 0.0;
+    double stamp = 0.0;
+    {
+        std::lock_guard<std::mutex> guard(_cachedPositionLock);
+        position = _cachedPositionSeconds.load();
+        stamp = _cachedPositionStamp;
+    }
+    if (!_cachedPaused.load() && !_cachedLoading.load() && !_cachedEnded.load()) {
+        position += fmin(fmax(CACurrentMediaTime() - stamp, 0.0), 1.0) * _cachedSpeed.load();
+    }
+    double duration = _cachedDurationSeconds.load();
+    return duration > 0.0 ? fmin(position, duration) : position;
 }
 
 - (double)rawPositionSeconds {
@@ -2098,7 +2401,7 @@ static void nuvioMpvWakeup(void *ctx) {
         if (cacheTime >= effectivePosition - 5.0) {
             return fmax(cacheTime - effectivePosition, 0.0);
         }
-        return cacheTime;
+        return fmax(cacheTime - safePosition, 0.0);
     }
 
     double cacheDuration = [self doubleProperty:"demuxer-cache-duration" fallback:0.0];
@@ -2136,18 +2439,23 @@ static void nuvioMpvWakeup(void *ctx) {
 
 - (void)updateCachedDuration:(double)duration
                     position:(double)position
+              positionReadAt:(double)positionReadAt
+          positionGeneration:(uint64_t)positionGeneration
                   cacheAhead:(double)cacheAhead
                       paused:(BOOL)paused
                      loading:(BOOL)loading
                        ended:(BOOL)ended
                        speed:(double)speed {
     _cachedDurationSeconds.store(std::isfinite(duration) ? fmax(duration, 0.0) : 0.0);
-    _cachedPositionSeconds.store(std::isfinite(position) ? fmax(position, 0.0) : 0.0);
     _cachedCacheAheadSeconds.store(std::isfinite(cacheAhead) ? fmax(cacheAhead, 0.0) : 0.0);
-    _cachedSpeed.store(std::isfinite(speed) ? fmax(0.25, fmin(4.0, speed)) : 1.0);
-    _cachedPaused.store(paused);
     _cachedLoading.store(loading);
     _cachedEnded.store(ended);
+    std::lock_guard<std::mutex> guard(_cachedPositionLock);
+    if (_cachedPositionGeneration != positionGeneration) return;
+    _cachedPositionSeconds.store(std::isfinite(position) ? fmax(position, 0.0) : 0.0);
+    _cachedPositionStamp = positionReadAt;
+    _cachedSpeed.store(std::isfinite(speed) ? fmax(0.25, fmin(4.0, speed)) : 1.0);
+    _cachedPaused.store(paused);
 }
 
 - (NSString *)audioTracksJson {
@@ -2162,6 +2470,12 @@ static void nuvioMpvWakeup(void *ctx) {
     if (!_mpv) return;
     int64_t id = trackId;
     mpv_set_property(_mpv, "aid", MPV_FORMAT_INT64, &id);
+}
+
+- (void)setAudioLanguages:(NSString *)languages {
+    if (!_mpv) return;
+    mpv_set_property_string(_mpv, "alang", languages.UTF8String);
+    mpv_set_property_string(_mpv, "aid", "auto");
 }
 
 - (void)selectSubtitleTrackId:(int)trackId {
@@ -2195,6 +2509,11 @@ static void nuvioMpvWakeup(void *ctx) {
     }
 }
 
+- (void)setSubtitleVisible:(BOOL)visible {
+    if (!_mpv) return;
+    [self setStringProperty:"sub-visibility" value:visible ? @"yes" : @"no"];
+}
+
 - (void)setSubtitleDelayMs:(int)delayMs {
     if (!_mpv) return;
     int clamped = MAX(-60000, MIN(60000, delayMs));
@@ -2215,6 +2534,17 @@ static void nuvioMpvWakeup(void *ctx) {
         return [codec containsString:@"ass"] || [codec containsString:@"ssa"];
     }
     return NO;
+}
+
+- (void)applySubtitleAppearanceWithFont:(NSString *)font
+                              fontsDir:(NSString *)fontsDir
+                           shadowColor:(NSString *)shadowColor
+                          shadowOffset:(double)shadowOffset {
+    if (!_mpv) return;
+    if (fontsDir.length > 0) [self setStringProperty:"sub-fonts-dir" value:fontsDir];
+    [self setStringProperty:"sub-font" value:font];
+    [self setStringProperty:"sub-shadow-color" value:shadowColor];
+    mpv_set_property(_mpv, "sub-shadow-offset", MPV_FORMAT_DOUBLE, &shadowOffset);
 }
 
 - (void)applySubtitleStyleWithTextColor:(NSString *)textColor
@@ -2279,7 +2609,7 @@ static void nuvioMpvWakeup(void *ctx) {
         if (modeChanged || backgroundColorChanged) {
             [self setStringProperty:"sub-back-color" value:resolvedBackgroundColor];
             [self setStringProperty:"sub-border-style"
-                              value:[resolvedBackgroundColor hasPrefix:@"#00"] ? @"outline-and-shadow" : @"opaque-box"];
+                              value:[resolvedBackgroundColor hasPrefix:@"#00"] ? @"outline-and-shadow" : @"background-box"];
         }
         if (modeChanged || outlineColorChanged) {
             [self setStringProperty:"sub-outline-color" value:resolvedOutlineColor];
@@ -2532,11 +2862,6 @@ static void nuvioMpvWakeup(void *ctx) {
         [self syncControls];
         return;
     }
-    if ([type isEqualToString:@"selectAudioTrack"] && value) {
-        [self selectAudioTrackId:(int)llround(value.doubleValue)];
-        [self syncControls];
-        return;
-    }
     if ([type isEqualToString:@"selectSubtitleTrack"] && value) {
         [self selectSubtitleTrackId:(int)llround(value.doubleValue)];
         [self syncControls];
@@ -2555,6 +2880,17 @@ static void nuvioMpvWakeup(void *ctx) {
     }
     if ([type isEqualToString:@"toggleFullscreen"]) {
         [self beginFullscreenTransitionWithReason:@"control-toggle"];
+    }
+    if ([type isEqualToString:@"dragWindow"]) {
+        [self beginWindowTrackingWithEdge:0];
+        return;
+    }
+    if ([type isEqualToString:@"resizeWindow"] && value) {
+        NSInteger edge = (NSInteger)llround(value.doubleValue);
+        if (edge >= 10 && edge <= 17) {
+            [self beginWindowTrackingWithEdge:edge];
+        }
+        return;
     }
 
     if (_eventSink && _eventMethod) {
@@ -2611,10 +2947,195 @@ static void nuvioMpvWakeup(void *ctx) {
     int keyState = (keyFlags & 0x0000FF00) >> 8;
     BOOL isKeyDown = keyState == 0x0A;
     BOOL isRepeat = (keyFlags & 0x1) != 0;
-    if (isKeyDown && !isRepeat) {
+    if (isKeyDown && !isRepeat && !_remoteCommandsActive) {
         [self dispatchMediaKeyPlayerEvent:eventType];
     }
     return nil;
+}
+
+// Registers with the system's now-playing infrastructure so macOS (rcd) routes
+// hardware media keys here instead of launching the default media app (Music).
+// While registration is active, the local NSSystemDefined monitor only swallows
+// the raw key events; playback commands arrive through these handlers.
+- (void)activateRemoteCommands {
+    if (_remoteCommandsActive) {
+        return;
+    }
+    _remoteCommandsActive = YES;
+    __weak MpvWebPlayer *weakSelf = self;
+    MPRemoteCommandCenter *center = [MPRemoteCommandCenter sharedCommandCenter];
+    [center.togglePlayPauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        [weakSelf dispatchMediaKeyPlayerEvent:@"keyboardToggle"];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [center.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        MpvWebPlayer *strongSelf = weakSelf;
+        if (strongSelf && strongSelf->_cachedPaused.load()) {
+            [strongSelf dispatchMediaKeyPlayerEvent:@"keyboardToggle"];
+        }
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [center.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        MpvWebPlayer *strongSelf = weakSelf;
+        if (strongSelf && !strongSelf->_cachedPaused.load()) {
+            [strongSelf dispatchMediaKeyPlayerEvent:@"keyboardToggle"];
+        }
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [center.nextTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        [weakSelf dispatchMediaKeyPlayerEvent:@"keyboardSeekForward"];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    [center.previousTrackCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+        [weakSelf dispatchMediaKeyPlayerEvent:@"keyboardSeekBack"];
+        return MPRemoteCommandHandlerStatusSuccess;
+    }];
+    MPNowPlayingInfoCenter *info = [MPNowPlayingInfoCenter defaultCenter];
+    info.playbackState = MPNowPlayingPlaybackStatePlaying;
+}
+
+- (void)deactivateRemoteCommands {
+    if (!_remoteCommandsActive) {
+        return;
+    }
+    _remoteCommandsActive = NO;
+    MPRemoteCommandCenter *center = [MPRemoteCommandCenter sharedCommandCenter];
+    [center.togglePlayPauseCommand removeTarget:nil];
+    [center.playCommand removeTarget:nil];
+    [center.pauseCommand removeTarget:nil];
+    [center.nextTrackCommand removeTarget:nil];
+    [center.previousTrackCommand removeTarget:nil];
+    MPNowPlayingInfoCenter *info = [MPNowPlayingInfoCenter defaultCenter];
+    info.playbackState = MPNowPlayingPlaybackStateStopped;
+    info.nowPlayingInfo = nil;
+    _lastNowPlayingTitle = nil;
+    [_nowPlayingArtworkTask cancel];
+    _nowPlayingArtworkTask = nil;
+    _nowPlayingArtwork = nil;
+    _nowPlayingArtworkUrl = nil;
+    _nowPlayingTitleOverride = nil;
+    _nowPlayingSubtitle = nil;
+}
+
+- (void)setNowPlayingArtworkUrlString:(NSString *)urlString {
+    NSString *cleaned = urlString ?: @"";
+    if ([cleaned isEqualToString:_nowPlayingArtworkUrl ?: @""]) {
+        return;
+    }
+    _nowPlayingArtworkUrl = cleaned;
+    [_nowPlayingArtworkTask cancel];
+    _nowPlayingArtworkTask = nil;
+    _nowPlayingArtwork = nil;
+    NSURL *url = (cleaned.length > 0) ? [NSURL URLWithString:cleaned] : nil;
+    if (!url) {
+        [self pushNowPlayingArtwork];
+        return;
+    }
+    __weak MpvWebPlayer *weakSelf = self;
+    _nowPlayingArtworkTask = [[NSURLSession sharedSession] dataTaskWithURL:url
+                                                         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error || !data) {
+            return;
+        }
+        NSImage *image = [[NSImage alloc] initWithData:data];
+        if (!image) {
+            return;
+        }
+        MPMediaItemArtwork *artwork = [[MPMediaItemArtwork alloc] initWithBoundsSize:image.size
+                                                                      requestHandler:^NSImage *(CGSize size) {
+            return image;
+        }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MpvWebPlayer *strongSelf = weakSelf;
+            if (!strongSelf || ![cleaned isEqualToString:strongSelf->_nowPlayingArtworkUrl ?: @""]) {
+                return;
+            }
+            strongSelf->_nowPlayingArtwork = artwork;
+            strongSelf->_nowPlayingArtworkTask = nil;
+            [strongSelf pushNowPlayingArtwork];
+        });
+    }];
+    [_nowPlayingArtworkTask resume];
+}
+
+// Title/subtitle come from the app's own metadata (show name, "S1E4 - Episode")
+// rather than mpv's media-title, which for streams is just the file name.
+- (void)setNowPlayingTitle:(NSString *)title subtitle:(NSString *)subtitle artworkUrl:(NSString *)artworkUrl {
+    NSString *cleanTitle = title ?: @"";
+    NSString *cleanSubtitle = subtitle ?: @"";
+    if (![cleanTitle isEqualToString:_nowPlayingTitleOverride ?: @""]
+        || ![cleanSubtitle isEqualToString:_nowPlayingSubtitle ?: @""]) {
+        _nowPlayingTitleOverride = cleanTitle;
+        _nowPlayingSubtitle = cleanSubtitle;
+        _nowPlayingMetadataDirty = YES;
+    }
+    [self setNowPlayingArtworkUrlString:artworkUrl];
+}
+
+// Merges the artwork into whatever now-playing info is currently published,
+// without waiting for the next periodic update.
+- (void)pushNowPlayingArtwork {
+    if (!_remoteCommandsActive) {
+        return;
+    }
+    MPNowPlayingInfoCenter *info = [MPNowPlayingInfoCenter defaultCenter];
+    NSMutableDictionary *nowPlaying = [info.nowPlayingInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (_nowPlayingArtwork) {
+        nowPlaying[MPMediaItemPropertyArtwork] = _nowPlayingArtwork;
+    } else {
+        [nowPlaying removeObjectForKey:MPMediaItemPropertyArtwork];
+    }
+    info.nowPlayingInfo = nowPlaying;
+}
+
+- (void)updateNowPlayingWithTitle:(NSString *)title
+                         duration:(double)duration
+                         position:(double)position
+                           paused:(BOOL)paused
+                            speed:(double)speed {
+    if (!_remoteCommandsActive) {
+        return;
+    }
+    // The system extrapolates elapsed time from rate, so only push an update on
+    // a real change (state, title, duration, speed, or a seek).
+    NSTimeInterval now = NSDate.timeIntervalSinceReferenceDate;
+    double expectedPosition = _lastNowPlayingPosition
+        + (_lastNowPlayingPaused ? 0.0 : (now - _lastNowPlayingPushedAt) * _lastNowPlayingSpeed);
+    BOOL seeked = fabs(position - expectedPosition) > 3.0;
+    NSString *displayTitle = (_nowPlayingTitleOverride.length > 0) ? _nowPlayingTitleOverride : title;
+    BOOL changed = _nowPlayingMetadataDirty
+        || paused != _lastNowPlayingPaused
+        || fabs(duration - _lastNowPlayingDuration) > 0.5
+        || fabs(speed - _lastNowPlayingSpeed) > 0.01
+        || seeked
+        || (displayTitle && ![displayTitle isEqualToString:_lastNowPlayingTitle ?: @""]);
+    if (!changed) {
+        return;
+    }
+    _nowPlayingMetadataDirty = NO;
+    _lastNowPlayingPaused = paused;
+    _lastNowPlayingDuration = duration;
+    _lastNowPlayingPosition = position;
+    _lastNowPlayingSpeed = speed;
+    _lastNowPlayingTitle = displayTitle;
+    _lastNowPlayingPushedAt = now;
+    NSMutableDictionary *nowPlaying = [NSMutableDictionary dictionary];
+    nowPlaying[MPNowPlayingInfoPropertyMediaType] = @(MPNowPlayingInfoMediaTypeVideo);
+    nowPlaying[MPMediaItemPropertyTitle] = (displayTitle.length > 0) ? displayTitle : @"Nuvio";
+    if (_nowPlayingSubtitle.length > 0) {
+        nowPlaying[MPMediaItemPropertyArtist] = _nowPlayingSubtitle;
+    }
+    if (duration > 0.0) {
+        nowPlaying[MPMediaItemPropertyPlaybackDuration] = @(duration);
+    }
+    nowPlaying[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(position);
+    nowPlaying[MPNowPlayingInfoPropertyPlaybackRate] = @(paused ? 0.0 : speed);
+    if (_nowPlayingArtwork) {
+        nowPlaying[MPMediaItemPropertyArtwork] = _nowPlayingArtwork;
+    }
+    MPNowPlayingInfoCenter *info = [MPNowPlayingInfoCenter defaultCenter];
+    info.nowPlayingInfo = nowPlaying;
+    info.playbackState = paused ? MPNowPlayingPlaybackStatePaused : MPNowPlayingPlaybackStatePlaying;
 }
 
 - (void)dispatchMediaKeyPlayerEvent:(NSString *)type {
@@ -2727,6 +3248,7 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_create(
     jstring controlsPageUrl,
     jint decoderPriority,
     jboolean nvidiaRtxSuperResolutionEnabled,
+    jboolean /*nvidiaRtxHdrEnabled*/,
     jobject eventSink
 ) {
     NSView *hostView = (__bridge NSView *)(void *)(intptr_t)hostViewPtr;
@@ -2816,6 +3338,27 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_updateControls(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setNowPlayingMetadata(
+    JNIEnv *env,
+    jobject /* bridge */,
+    jlong handle,
+    jstring title,
+    jstring subtitle,
+    jstring artworkUrl
+) {
+    if (handle == 0) return;
+    std::string titleText = jstringToString(env, title);
+    std::string subtitleText = jstringToString(env, subtitle);
+    std::string url = jstringToString(env, artworkUrl);
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    runOnMainAsync(^{
+        [player setNowPlayingTitle:[NSString stringWithUTF8String:titleText.c_str()]
+                          subtitle:[NSString stringWithUTF8String:subtitleText.c_str()]
+                        artworkUrl:[NSString stringWithUTF8String:url.c_str()]];
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_requestFocus(
     JNIEnv *,
     jobject,
@@ -2842,15 +3385,37 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setWindowResizable
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setWindowAspectRatio(
+    JNIEnv *, jobject, jlong windowViewPtr, jfloat ratio
+) {
+    if (windowViewPtr == 0 || !(ratio > 0.0f)) return;
+    NSView *view = (__bridge NSView *)(void *)(intptr_t)windowViewPtr;
+    runOnMainAsync(^{
+        view.window.contentAspectRatio = NSMakeSize(ratio, 1.0);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_layoutNativeSubviews(
+    JNIEnv *, jobject, jlong
+) {
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_reparentSurfaceNative(
     JNIEnv *, jobject, jlong handle, jlong hostViewPtr
 ) {
     if (handle == 0 || hostViewPtr == 0) return;
     MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
     NSView *hostView = (__bridge NSView *)(void *)(intptr_t)hostViewPtr;
-    runOnMainSync(^{
-        [player reparentSurfaceToHostView:hostView];
-    });
+    // AWT can query Java focus while the PiP window becomes key. Its main thread
+    // then waits in AWTRunLoopMode for the EDT, which is waiting here. GCD's main
+    // queue is not serviced in that mode; schedule the move in AWT's loop too.
+    // Keep the move synchronous so the old window is not disposed before it ends.
+    [player performSelectorOnMainThread:@selector(reparentSurfaceToHostView:)
+                            withObject:hostView
+                         waitUntilDone:YES
+                                 modes:@[NSRunLoopCommonModes, @"AWTRunLoopMode"]];
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -3052,6 +3617,21 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_audioTracksJson(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_stringProperty(
+    JNIEnv *env,
+    jobject /* bridge */,
+    jlong handle,
+    jstring name
+) {
+    if (handle == 0 || name == nullptr) return env->NewStringUTF("");
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    const char *chars = env->GetStringUTFChars(name, nullptr);
+    NSString *value = [player stringProperty:chars fallback:@""];
+    env->ReleaseStringUTFChars(name, chars);
+    return env->NewStringUTF(value.UTF8String);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_subtitleTracksJson(
     JNIEnv *env,
     jobject /* bridge */,
@@ -3074,6 +3654,21 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_selectAudioTrack(
     MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
     runOnMainAsync(^{
         [player selectAudioTrackId:(int)trackId];
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setAudioLanguages(
+    JNIEnv *env,
+    jobject /* bridge */,
+    jlong handle,
+    jstring languages
+) {
+    if (handle == 0) return;
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    NSString *value = [NSString stringWithUTF8String:jstringToString(env, languages).c_str()] ?: @"";
+    runOnMainAsync(^{
+        [player setAudioLanguages:value];
     });
 }
 
@@ -3134,6 +3729,20 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_clearExternalSubti
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setSubtitleVisible(
+    JNIEnv * /* env */,
+    jobject /* bridge */,
+    jlong handle,
+    jboolean visible
+) {
+    if (handle == 0) return;
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    runOnMainAsync(^{
+        [player setSubtitleVisible:visible == JNI_TRUE];
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setSubtitleDelayMs(
     JNIEnv * /* env */,
     jobject /* bridge */,
@@ -3175,5 +3784,28 @@ Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_applySubtitleStyle
                                         fontSize:(double)fontSize
                                           subPos:(int)subPos
                                        useLibass:useLibass == JNI_TRUE];
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nuvio_app_features_player_desktop_NativePlayerBridge_setSubtitleAppearance(
+    JNIEnv *env,
+    jobject /* bridge */,
+    jlong handle,
+    jstring font,
+    jstring fontsDir,
+    jstring shadowColor,
+    jfloat shadowOffset
+) {
+    if (handle == 0) return;
+    std::string fontName = jstringToString(env, font);
+    std::string dir = jstringToString(env, fontsDir);
+    std::string shadow = jstringToString(env, shadowColor);
+    MpvWebPlayer *player = (__bridge MpvWebPlayer *)(void *)(intptr_t)handle;
+    runOnMainAsync(^{
+        [player applySubtitleAppearanceWithFont:[NSString stringWithUTF8String:fontName.c_str()]
+                                       fontsDir:[NSString stringWithUTF8String:dir.c_str()]
+                                    shadowColor:[NSString stringWithUTF8String:shadow.c_str()]
+                                   shadowOffset:(double)shadowOffset];
     });
 }
