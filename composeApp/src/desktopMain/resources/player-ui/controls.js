@@ -4245,7 +4245,29 @@ document.addEventListener("keydown", event => {
     return;
   }
 
-  if (activeModal && event.code.startsWith("Arrow") && (!document.activeElement || document.activeElement.tagName === "BODY" || document.activeElement === root)) {
+  // Up/Down di panel: pindah baris daftar (bukan volume), mengikuti baris yang
+  // sedang fokus atau baris terpilih. Ditaruh sebelum cabang generik supaya
+  // fokus tidak loncat ke tab/tombol lain saat baris sudah difokus.
+  if (activeModal && (event.code === "ArrowUp" || event.code === "ArrowDown")) {
+    const modalEl = isPartyConfirmOpen() ? partyConfirm : modalByName[activeModal];
+    if (modalEl) {
+      const rows = Array.from(modalEl.querySelectorAll('.subtitle-language-row, .track-row, .episode-row'))
+        .filter(el => !el.disabled && !el.hidden && (el.offsetWidth > 0 || el.offsetHeight > 0));
+      if (rows.length) {
+        let currentIndex = rows.indexOf(document.activeElement);
+        if (currentIndex < 0) currentIndex = rows.findIndex(el => el.classList.contains('selected'));
+        if (currentIndex < 0) currentIndex = 0;
+        const nextIndex = event.code === 'ArrowDown'
+          ? (currentIndex < rows.length - 1 ? currentIndex + 1 : 0)
+          : (currentIndex > 0 ? currentIndex - 1 : rows.length - 1);
+        event.preventDefault();
+        rows[nextIndex].focus();
+        return;
+      }
+    }
+  }
+
+  if (activeModal && (event.code === "ArrowLeft" || event.code === "ArrowRight") && (!document.activeElement || document.activeElement.tagName === "BODY" || document.activeElement === root)) {
     let items;
     if (activeModal === "subtitles") {
       items = Array.from(document.querySelectorAll('.subtitle-language-row:not([disabled]):not([hidden])'))
@@ -4269,7 +4291,7 @@ document.addEventListener("keydown", event => {
     }
   }
 
-  if (activeModal && event.code.startsWith("Arrow") && document.activeElement && document.activeElement.tagName !== "BODY" && document.activeElement !== root) {
+  if (activeModal && (event.code === "ArrowLeft" || event.code === "ArrowRight") && document.activeElement && document.activeElement.tagName !== "BODY" && document.activeElement !== root) {
     const modalEl = isPartyConfirmOpen() ? partyConfirm : modalByName[activeModal];
     if (!modalEl) return;
     const focusable = Array.from(modalEl.querySelectorAll('button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden]), [tabindex]:not([tabindex="-1"])'))
@@ -4277,13 +4299,13 @@ document.addEventListener("keydown", event => {
     if (focusable.length) {
       const currentIndex = focusable.indexOf(document.activeElement);
       if (currentIndex >= 0) {
-        if (event.code === 'ArrowRight' || event.code === 'ArrowDown') {
+        if (event.code === 'ArrowRight') {
           event.preventDefault();
           const next = (currentIndex + 1) % focusable.length;
           focusable[next].focus();
           return;
         }
-        if (event.code === 'ArrowLeft' || event.code === 'ArrowUp') {
+        if (event.code === 'ArrowLeft') {
           event.preventDefault();
           const next = currentIndex > 0 ? currentIndex - 1 : focusable.length - 1;
           focusable[next].focus();
