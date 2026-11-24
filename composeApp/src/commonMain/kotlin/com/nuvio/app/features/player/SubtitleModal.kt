@@ -425,9 +425,13 @@ private fun SubtitleOptionRow(
             title = languageLabelForCode(option.subtitle.language)
             // Uploader di baris metadata; nama file/release di baris detail
             // (dengan tooltip penuh saat hover).
+            // Urutan penting: uploader (custom) -> display (nama cantik dari addon,
+            // perilaku 1.27) -> label. `label` diisi id mentah addon oleh upstream,
+            // jadi jangan sampai menang atas display.
             metadata = option.subtitle.uploader.takeIf { it.isNotBlank() }
                 ?.let { "by $it" }
-                ?: (option.subtitle.label ?: option.subtitle.display).takeIf { it.isNotBlank() && it != title }
+                ?: option.subtitle.display.takeIf { it.isNotBlank() && it != title }
+                ?: option.subtitle.label?.takeIf { it.isNotBlank() && it != title }
             detail = option.subtitle.detail.takeIf { it.isNotBlank() }
         }
     }

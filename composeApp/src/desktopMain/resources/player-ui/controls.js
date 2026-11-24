@@ -805,9 +805,11 @@ const applyTheme = () => {
   const gradientColors = Array.isArray(state.themeAccentGradientColors)
     ? state.themeAccentGradientColors.map(color => cssColorOrFallback(color, "")).filter(Boolean)
     : [];
+  // Spinner/loading: pakai gradient tema kalau ada, kalau tidak ikuti warna
+  // buffering (putih) seperti spinner 1.27 — bukan accent biru.
   const loadingColors = gradientColors.length > 0
     ? gradientColors
-    : [cssColorOrFallback(state.themeAccentColor, "#2f6fed")];
+    : [cssColorOrFallback(state.themeBufferingColor, "#fff")];
   openingLoadingIndicator.setColors(loadingColors);
   bufferingLoadingIndicator.setColors(loadingColors);
   if (gradientColors.length > 1) {

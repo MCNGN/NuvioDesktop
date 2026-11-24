@@ -17,7 +17,7 @@
 
   window.createLoadingIndicator = canvas => {
     const context = canvas.getContext("2d");
-    let colors = ["#2f6fed"];
+    let colors = ["#fff"];
     let active = false;
     let animation = null;
     let startedAt = null;
