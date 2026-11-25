@@ -810,8 +810,6 @@ const applyTheme = () => {
   const loadingColors = gradientColors.length > 0
     ? gradientColors
     : [cssColorOrFallback(state.themeBufferingColor, "#fff")];
-  openingLoadingIndicator.setColors(loadingColors);
-  bufferingLoadingIndicator.setColors(loadingColors);
   if (gradientColors.length > 1) {
     style.setProperty("--theme-accent-gradient", `linear-gradient(to right, ${gradientColors.join(", ")})`);
     style.setProperty("--theme-accent-gradient-vertical", `linear-gradient(to bottom, ${gradientColors.join(", ")})`);
@@ -842,6 +840,14 @@ const applyTheme = () => {
   setColor("--theme-text-muted", state.themeTextMutedColor, "rgba(255, 255, 255, .6)");
   setColor("--theme-border-default", state.themeBorderDefaultColor, "rgba(255, 255, 255, .12)");
   setColor("--theme-danger", state.themeDangerColor, "#e36a8a");
+  // Warna indikator loading diterapkan terakhir: kalau elemen canvas bermasalah,
+  // variabel tema di atas sudah pasti terpasang (jangan sampai UI jatuh ke default biru).
+  try {
+    openingLoadingIndicator.setColors(loadingColors);
+    bufferingLoadingIndicator.setColors(loadingColors);
+  } catch (error) {
+    console.warn("loading indicator colors unavailable", error);
+  }
 };
 
 const formatTime = milliseconds => {
@@ -3721,6 +3727,12 @@ window.playerUpdate = update => {
     }
   }
   if (unchanged) return;
+  // Pastikan warna tema tetap terpasang walau handler playerControls sempat gagal.
+  try {
+    applyTheme();
+  } catch (error) {
+    console.warn("applyTheme failed", error);
+  }
   renderChrome();
   if ((audioTracksChanged && activeModal === "audio") ||
       (subtitleTracksChanged && activeModal === "subtitles") ||
@@ -3772,7 +3784,13 @@ window.playerControls = nextState => {
   if (notificationToken !== previousNotificationToken) {
     showPlayerToast(state.notificationMessage);
   }
-  if (!replayingParty) applyPartyControls(previousParty);
+  // Sub-sistem opsional (party/consent) tidak boleh menggagalkan render utama:
+  // dulu exception di sini membuat applyTheme() tidak pernah jalan.
+  try {
+    if (!replayingParty) applyPartyControls(previousParty);
+  } catch (error) {
+    console.warn("party controls failed", error);
+  }
   if (state.showP2pConsent && activeModal !== "p2pConsent") {
     openPlayerModal("p2pConsent");
   } else if (!state.showP2pConsent && activeModal === "p2pConsent") {
