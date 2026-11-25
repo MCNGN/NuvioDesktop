@@ -1810,9 +1810,15 @@ private fun PlayerScreenRuntime.buildPlayerControlSubtitleSelection(): PlayerCon
                         index = visibleAddonSubtitles.indexOf(option.subtitle).coerceAtLeast(0),
                         sourceLabel = option.subtitle.addonName ?: addonLabel,
                         title = title,
-                        metadata = option.subtitle.display.takeIf {
-                            it.isNotBlank() && it != title
-                        }.orEmpty(),
+                        // Samakan dengan build 1.27: uploader tampil sebagai
+                        // "by <nama>", display jadi cadangan, dan nama file/release
+                        // tetap dikirim lewat `detail` (bukan ditelan sebagai metadata).
+                        metadata = option.subtitle.uploader.takeIf { it.isNotBlank() }
+                            ?.let { "by $it" }
+                            ?: option.subtitle.display.takeIf {
+                                it.isNotBlank() && it != title
+                            }.orEmpty(),
+                        detail = option.subtitle.detail.orEmpty(),
                         isSelected = option.id == selectedOptionId,
                         isAutoSynced = option.id == selectedOptionId && option.subtitle.url == autoSyncedUrl,
                     )
